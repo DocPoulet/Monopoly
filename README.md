@@ -136,3 +136,13 @@ La fenêtre d'enchère elle-même reste modale pour le moment car plusieurs joue
 - affichage dans le panneau d'enchère du meilleur prix, du joueur courant, de son budget et des participants encore en lice ;
 - validation des offres directement dans le panneau ;
 - dés et gestion des propriétés bloqués pendant une enchère.
+
+## Amélioration graphique V5 — enchères
+
+La page d'enchère a été harmonisée avec les fiches de propriétés :
+
+- le bandeau du panneau d'enchère reprend automatiquement la couleur du bien ;
+- la fiche complète de la propriété reste visible à gauche pendant toute l'enchère ;
+- cette fiche passe en lecture seule et conserve le prix, les loyers, le coût des maisons et l'hypothèque ;
+- le panneau interactif d'enchère reste à droite avec les offres et les joueurs encore en lice ;
+- aucun dialogue ou nouvelle fenêtre n'est ouvert.

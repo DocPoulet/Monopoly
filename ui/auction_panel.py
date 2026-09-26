@@ -9,6 +9,8 @@ from typing import Callable
 from monopoly.auction import Auction, AuctionResult
 from monopoly.player import Player
 
+from .property_card import PropertyCardOverlay
+
 
 class AuctionOverlay(tk.Frame):
     """Gère une enchère dans le plateau sans ouvrir de fenêtre secondaire.
@@ -53,13 +55,14 @@ class AuctionOverlay(tk.Frame):
         self.header.pack(fill="x")
         self.header.pack_propagate(False)
 
-        tk.Label(
+        self.header_title_label = tk.Label(
             self.header,
             text="ENCHÈRE",
             background="#34495E",
-            foreground="#D8E2E8",
+            foreground="#F7FAFC",
             font=("Arial", 9, "bold"),
-        ).pack(pady=(8, 0))
+        )
+        self.header_title_label.pack(pady=(8, 0))
         self.name_label = tk.Label(
             self.header,
             text="",
@@ -178,9 +181,15 @@ class AuctionOverlay(tk.Frame):
         self.bidder_index = 0
         self.on_finished = on_finished
         self.error_label.configure(text="")
-        self.name_label.configure(text=auction.space.name.upper())
+        header_color = PropertyCardOverlay._header_color(auction.space)
+        self.header.configure(background=header_color)
+        self.header_title_label.configure(background=header_color)
+        self.name_label.configure(
+            text=auction.space.name.upper(),
+            background=header_color,
+        )
         self.price_label.configure(text=f"Prix affiché : {auction.space.price} $")
-        self.place(relx=0.5, rely=0.50, anchor="center", width=430)
+        self.place(relx=0.70, rely=0.50, anchor="center", width=350)
         self.lift()
         self._refresh()
 

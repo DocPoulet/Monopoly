@@ -117,13 +117,13 @@ class PropertyCardOverlay(tk.Frame):
         )
         self.cash_label.pack(pady=(2, 8))
 
-        button_row = ttk.Frame(self.body)
-        button_row.pack(fill="x", pady=(4, 0))
-        button_row.columnconfigure(0, weight=1)
-        button_row.columnconfigure(1, weight=1)
+        self.button_row = ttk.Frame(self.body)
+        self.button_row.pack(fill="x", pady=(4, 0))
+        self.button_row.columnconfigure(0, weight=1)
+        self.button_row.columnconfigure(1, weight=1)
 
         self.buy_button = ttk.Button(
-            button_row,
+            self.button_row,
             text="Acheter",
             style="Primary.TButton",
             command=self._buy,
@@ -131,35 +131,21 @@ class PropertyCardOverlay(tk.Frame):
         self.buy_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
 
         self.auction_button = ttk.Button(
-            button_row,
+            self.button_row,
             text="Enchères",
             command=self._auction,
         )
         self.auction_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-    def show(
-        self,
-        player: Player,
-        space: OwnableSpace,
-        on_buy: Callable[[], None],
-        on_auction: Callable[[], None],
-    ) -> None:
-        """Charge un bien et affiche sa fiche au centre du plateau.
+    def _populate_space(self, space: OwnableSpace) -> None:
+        """Remplit la fiche avec les informations financières d'un bien.
 
         Entrées:
-            player (Player): Joueur qui doit prendre la décision d'achat.
-            space (OwnableSpace): Bien libre concerné.
-            on_buy (Callable[[], None]): Action exécutée au clic sur Acheter.
-            on_auction (Callable[[], None]): Action exécutée au clic sur Enchères.
+            space (OwnableSpace): Terrain, gare ou compagnie à représenter.
 
         Sortie:
-            None: La fiche devient visible et interactive.
+            None: L'en-tête, le prix, l'hypothèque et le barème sont actualisés.
         """
-        self.player = player
-        self.space = space
-        self.on_buy = on_buy
-        self.on_auction = on_auction
-
         header_color = self._header_color(space)
         self.header.configure(background=header_color)
         self.type_label.configure(
@@ -173,11 +159,6 @@ class PropertyCardOverlay(tk.Frame):
         self.price_label.configure(text=f"PRIX D'ACHAT : {space.price} $")
         self.mortgage_label.configure(
             text=f"Valeur hypothécaire : {space.mortgage_value} $"
-        )
-        self.cash_label.configure(text=f"{player.name} possède {player.cash} $")
-        self.buy_button.configure(text=f"Acheter • {space.price} $")
-        self.buy_button.state(
-            ["!disabled"] if player.can_afford(space.price) else ["disabled"]
         )
 
         for child in self.details_frame.winfo_children():
@@ -202,7 +183,64 @@ class PropertyCardOverlay(tk.Frame):
                 font=font,
             ).pack(side="right")
 
+    def show(
+        self,
+        player: Player,
+        space: OwnableSpace,
+        on_buy: Callable[[], None],
+        on_auction: Callable[[], None],
+    ) -> None:
+        """Charge un bien et affiche sa fiche au centre du plateau.
+
+        Entrées:
+            player (Player): Joueur qui doit prendre la décision d'achat.
+            space (OwnableSpace): Bien libre concerné.
+            on_buy (Callable[[], None]): Action exécutée au clic sur Acheter.
+            on_auction (Callable[[], None]): Action exécutée au clic sur Enchères.
+
+        Sortie:
+            None: La fiche devient visible et interactive.
+        """
+        self.player = player
+        self.space = space
+        self.on_buy = on_buy
+        self.on_auction = on_auction
+
+        self._populate_space(space)
+        self.cash_label.configure(text=f"{player.name} possède {player.cash} $")
+        self.buy_button.configure(text=f"Acheter • {space.price} $")
+        self.buy_button.state(
+            ["!disabled"] if player.can_afford(space.price) else ["disabled"]
+        )
+        self.button_row.pack(fill="x", pady=(4, 0))
+
         self.place(relx=0.5, rely=0.50, anchor="center", width=390)
+        self.lift()
+
+    def show_for_auction(
+        self,
+        space: OwnableSpace,
+        relx: float = 0.30,
+        width: int = 300,
+    ) -> None:
+        """Affiche la même fiche en lecture seule à côté d'une enchère.
+
+        Entrées:
+            space (OwnableSpace): Bien actuellement mis aux enchères.
+            relx (float): Position horizontale relative du centre de la fiche.
+            width (int): Largeur de la fiche en pixels pendant l'enchère.
+
+        Sortie:
+            None: La fiche apparaît sans boutons Achat/Enchères ni joueur acheteur.
+        """
+        self.player = None
+        self.space = space
+        self.on_buy = None
+        self.on_auction = None
+        self._populate_space(space)
+        self.cash_label.configure(text="PROPRIÉTÉ AUX ENCHÈRES")
+        self.button_row.pack_forget()
+        self.place(relx=relx, rely=0.50, anchor="center", width=width)
         self.lift()
 
     def hide(self) -> None:

@@ -221,10 +221,12 @@ class BoardView(ttk.Frame):
             on_finished (Callable[[AuctionResult], None]): Callback appelé à la clôture.
 
         Sortie:
-            None: La fiche d'achat est masquée et le panneau d'enchère apparaît.
+            None: La fiche du bien reste visible à gauche et l'enchère apparaît à droite.
         """
-        self.property_card.hide()
+        self.property_card.show_for_auction(auction.space, relx=0.30, width=300)
         self.auction_panel.show(auction, on_finished)
+        self.property_card.lift()
+        self.auction_panel.lift()
 
     def hide_auction(self) -> None:
         """Masque le panneau d'enchère intégré.
@@ -236,6 +238,8 @@ class BoardView(ttk.Frame):
             None: Le panneau d'enchère disparaît du plateau.
         """
         self.auction_panel.hide()
+        if self.property_card.player is None:
+            self.property_card.hide()
 
     def _on_resize(self, event: tk.Event) -> None:
         """Redessine le plateau lorsque la taille du Canvas change.

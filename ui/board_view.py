@@ -1,0 +1,678 @@
+"""Affichage graphique interactif du plateau de Monopoly."""
+
+from __future__ import annotations
+
+import tkinter as tk
+from tkinter import ttk
+from typing import TYPE_CHECKING, Callable
+
+from monopoly.auction import Auction, AuctionResult
+from monopoly.cards import DrawnCardEvent
+from monopoly.player import Player
+from monopoly.properties import OwnableSpace, Property, Railroad, Utility
+from monopoly.spaces import (
+    ChanceSpace,
+    CommunityChestSpace,
+    FreeParkingSpace,
+    GoSpace,
+    GoToJailSpace,
+    JailSpace,
+    TaxSpace,
+)
+from .auction_panel import AuctionOverlay
+from .property_card import PropertyCardOverlay
+
+if TYPE_CHECKING:
+    from monopoly.game import Game
+
+
+COLOR_GROUPS = {
+    "brown": "#8B5A2B",
+    "light_blue": "#79CFE8",
+    "pink": "#D95FA6",
+    "orange": "#F39C12",
+    "red": "#E74C3C",
+    "yellow": "#F4D03F",
+    "green": "#27AE60",
+    "dark_blue": "#3156A6",
+}
+
+PLAYER_COLORS = [
+    "#D94343",
+    "#3478D4",
+    "#2D9B64",
+    "#E0912E",
+    "#8E5AC7",
+    "#188E9E",
+]
+
+
+def board_grid_position(index: int) -> tuple[int, int]:
+    """Convertit un index de case Monopoly en coordonnées de grille 11 × 11.
+
+    Entrées:
+        index (int): Index de la case compris entre 0 et 39.
+
+    Sortie:
+        tuple[int, int]: Couple ``(ligne, colonne)`` correspondant au bord du plateau.
+
+    Lève:
+        ValueError: Si l'index ne correspond pas à une case du plateau.
+    """
+    if not 0 <= index <= 39:
+        raise ValueError("L'index d'une case doit être compris entre 0 et 39.")
+    if index == 0:
+        return 10, 10
+    if 1 <= index <= 9:
+        return 10, 10 - index
+    if index == 10:
+        return 10, 0
+    if 11 <= index <= 19:
+        return 20 - index, 0
+    if index == 20:
+        return 0, 0
+    if 21 <= index <= 29:
+        return 0, index - 20
+    if index == 30:
+        return 0, 10
+    return index - 30, 10
+
+
+def center_deck_rectangles(
+    x1: float,
+    x2: float,
+    center_y: float,
+    cell: float,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """Calcule deux rectangles de cartes entièrement contenus dans le centre du plateau.
+
+    Entrées:
+        x1 (float): Bord gauche de la zone centrale.
+        x2 (float): Bord droit de la zone centrale.
+        center_y (float): Coordonnée verticale du centre du plateau.
+        cell (float): Taille d'une case du plateau.
+
+    Sortie:
+        tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+            Rectangles ``(x, y, largeur, hauteur)`` pour Caisse puis Chance.
+    """
+    margin = cell * 0.55
+    gap = cell * 0.55
+    usable_width = max(cell * 2.0, (x2 - x1) - 2 * margin - gap)
+    deck_width = usable_width / 2
+    deck_height = cell * 2.15
+    deck_y = center_y + cell * 0.12
+    left_x = x1 + margin
+    right_x = left_x + deck_width + gap
+    return (
+        (left_x, deck_y, deck_width, deck_height),
+        (right_x, deck_y, deck_width, deck_height),
+    )
+
+
+class BoardView(ttk.Frame):
+    """Affiche le plateau, ses cartes centrales et la fiche d'achat intégrée.
+
+    Entrées:
+        master (tk.Misc): Widget parent Tkinter.
+        game (Game): Partie dont l'état doit être représenté.
+
+    Sortie:
+        BoardView: Vue graphique actualisable du plateau.
+    """
+
+    def __init__(self, master: tk.Misc, game: Game) -> None:
+        """Construit le Canvas, le cache de cartes et la fiche de propriété superposée.
+
+        Entrées:
+            master (tk.Misc): Conteneur parent.
+            game (Game): Partie à dessiner.
+
+        Sortie:
+            None: Le plateau est prêt à être affiché et redimensionné.
+        """
+        super().__init__(master, style="Board.TFrame")
+        self.game = game
+        self.last_drawn_cards: dict[str, DrawnCardEvent | None] = {
+            "chance": None,
+            "community_chest": None,
+        }
+        self.canvas = tk.Canvas(
+            self,
+            background="#D9E2DF",
+            highlightthickness=0,
+            width=820,
+            height=820,
+        )
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self._on_resize)
+        self.property_card = PropertyCardOverlay(self)
+        self.auction_panel = AuctionOverlay(self)
+
+    def set_game(self, game: Game) -> None:
+        """Remplace la partie et réinitialise les éléments temporaires de l'affichage.
+
+        Entrées:
+            game (Game): Nouvelle partie à représenter.
+
+        Sortie:
+            None: Le plateau est réinitialisé puis redessiné.
+        """
+        self.game = game
+        self.last_drawn_cards = {"chance": None, "community_chest": None}
+        self.property_card.hide()
+        self.auction_panel.hide()
+        self.redraw()
+
+    def display_drawn_card(self, event: DrawnCardEvent) -> None:
+        """Affiche une carte tirée directement dans la zone centrale de son paquet.
+
+        Entrées:
+            event (DrawnCardEvent): Carte réellement tirée et appliquée par le moteur.
+
+        Sortie:
+            None: Le dernier tirage du paquet est mémorisé et le plateau redessiné.
+        """
+        if event.deck_name in self.last_drawn_cards:
+            self.last_drawn_cards[event.deck_name] = event
+            self.redraw()
+
+    def show_purchase_card(
+        self,
+        player: Player,
+        space: OwnableSpace,
+        on_buy: Callable[[], None],
+        on_auction: Callable[[], None],
+    ) -> None:
+        """Affiche la fiche d'un bien libre au centre du plateau.
+
+        Entrées:
+            player (Player): Joueur qui doit choisir.
+            space (OwnableSpace): Bien proposé.
+            on_buy (Callable[[], None]): Callback d'achat.
+            on_auction (Callable[[], None]): Callback de mise aux enchères.
+
+        Sortie:
+            None: La fiche superposée devient visible.
+        """
+        self.auction_panel.hide()
+        self.property_card.show(player, space, on_buy, on_auction)
+
+    def hide_purchase_card(self) -> None:
+        """Masque la fiche de propriété intégrée au plateau.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: La fiche superposée disparaît.
+        """
+        self.property_card.hide()
+
+    def show_auction(
+        self,
+        auction: Auction,
+        on_finished: Callable[[AuctionResult], None],
+    ) -> None:
+        """Affiche l'enchère au centre du plateau à la place de la fiche d'achat.
+
+        Entrées:
+            auction (Auction): Enchère métier à piloter.
+            on_finished (Callable[[AuctionResult], None]): Callback appelé à la clôture.
+
+        Sortie:
+            None: La fiche d'achat est masquée et le panneau d'enchère apparaît.
+        """
+        self.property_card.hide()
+        self.auction_panel.show(auction, on_finished)
+
+    def hide_auction(self) -> None:
+        """Masque le panneau d'enchère intégré.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le panneau d'enchère disparaît du plateau.
+        """
+        self.auction_panel.hide()
+
+    def _on_resize(self, event: tk.Event) -> None:
+        """Redessine le plateau lorsque la taille du Canvas change.
+
+        Entrées:
+            event (tk.Event): Événement Tkinter de redimensionnement.
+
+        Sortie:
+            None: Le dessin est recalculé à la nouvelle échelle.
+        """
+        self.redraw()
+
+    def redraw(self) -> None:
+        """Redessine toutes les cases, zones centrales et pions.
+
+        Entrées:
+            Aucune autre que l'état courant de la vue et de la partie.
+
+        Sortie:
+            None: Le contenu du Canvas est remplacé.
+        """
+        self.canvas.delete("all")
+        width = max(self.canvas.winfo_width(), 200)
+        height = max(self.canvas.winfo_height(), 200)
+        size = min(width, height) * 0.97
+        offset_x = (width - size) / 2
+        offset_y = (height - size) / 2
+        cell = size / 11
+
+        self.canvas.create_rectangle(
+            offset_x + 7,
+            offset_y + 9,
+            offset_x + size + 7,
+            offset_y + size + 9,
+            fill="#AEB9B6",
+            outline="",
+        )
+        self._draw_center(offset_x, offset_y, cell)
+
+        for index, space in enumerate(self.game.board.spaces):
+            row, col = board_grid_position(index)
+            self._draw_space(space, row, col, offset_x, offset_y, cell)
+
+        for player in self.game.players:
+            if not player.bankrupt:
+                self._draw_player(player, offset_x, offset_y, cell)
+
+    def _draw_center(self, offset_x: float, offset_y: float, cell: float) -> None:
+        """Dessine le titre et les zones permanentes Chance / Caisse de communauté.
+
+        Entrées:
+            offset_x (float): Décalage horizontal du plateau.
+            offset_y (float): Décalage vertical du plateau.
+            cell (float): Taille d'une case.
+
+        Sortie:
+            None: La zone centrale complète est dessinée.
+        """
+        x1 = offset_x + cell
+        y1 = offset_y + cell
+        x2 = offset_x + 10 * cell
+        y2 = offset_y + 10 * cell
+        self.canvas.create_rectangle(
+            x1, y1, x2, y2,
+            fill="#E8F3EA",
+            outline="#9CAB9F",
+            width=2,
+        )
+
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        self.canvas.create_text(
+            center_x,
+            center_y - cell * 1.55,
+            text="MONOPOLY",
+            font=("Arial", max(22, int(cell * 0.58)), "bold"),
+            fill="#263238",
+        )
+        self.canvas.create_text(
+            center_x,
+            center_y - cell * 1.02,
+            text="POO • moteur indépendant • interface Tkinter",
+            font=("Arial", max(9, int(cell * 0.16))),
+            fill="#61706B",
+        )
+
+        community_rect, chance_rect = center_deck_rectangles(
+            x1, x2, center_y, cell
+        )
+        self._draw_deck(
+            *community_rect,
+            "CAISSE DE COMMUNAUTÉ",
+            "#4F95C8",
+            "☰",
+            self.last_drawn_cards["community_chest"],
+        )
+        self._draw_deck(
+            *chance_rect,
+            "CHANCE",
+            "#E59B31",
+            "?",
+            self.last_drawn_cards["chance"],
+        )
+
+    def _draw_deck(
+        self,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        title: str,
+        color: str,
+        icon: str,
+        event: DrawnCardEvent | None,
+    ) -> None:
+        """Dessine un paquet ou la dernière carte tirée dans son emplacement central.
+
+        Entrées:
+            x (float): Coordonnée gauche.
+            y (float): Coordonnée haute.
+            width (float): Largeur de la zone.
+            height (float): Hauteur de la zone.
+            title (str): Nom du paquet.
+            color (str): Couleur d'identité du paquet.
+            icon (str): Icône lorsque rien n'a encore été tiré.
+            event (DrawnCardEvent | None): Dernier tirage à afficher, s'il existe.
+
+        Sortie:
+            None: Une carte stylisée est ajoutée au Canvas.
+        """
+        self.canvas.create_rectangle(
+            x + 5, y + 6, x + width + 5, y + height + 6,
+            fill="#AEB9B6", outline="",
+        )
+        self.canvas.create_rectangle(
+            x, y, x + width, y + height,
+            fill="#FFFDF8", outline=color, width=3,
+        )
+        band_h = height * 0.23
+        self.canvas.create_rectangle(
+            x, y, x + width, y + band_h,
+            fill=color, outline="",
+        )
+        self.canvas.create_text(
+            x + width / 2,
+            y + band_h / 2,
+            text=title,
+            fill="#FFFFFF",
+            font=("Arial", max(7, int(height * 0.075)), "bold"),
+        )
+
+        if event is None:
+            self.canvas.create_text(
+                x + width / 2,
+                y + height * 0.62,
+                text=icon,
+                fill=color,
+                font=("Arial", max(24, int(height * 0.30)), "bold"),
+            )
+            self.canvas.create_text(
+                x + width / 2,
+                y + height * 0.88,
+                text="Dernière carte tirée",
+                fill="#8A949B",
+                font=("Arial", max(6, int(height * 0.05))),
+            )
+            return
+
+        text = getattr(event.card, "text", event.message)
+        self.canvas.create_text(
+            x + width / 2,
+            y + band_h + (height - band_h) * 0.47,
+            text=text,
+            width=width * 0.82,
+            justify="center",
+            fill="#263238",
+            font=("Arial", max(7, int(height * 0.065)), "bold"),
+        )
+        self.canvas.create_text(
+            x + width / 2,
+            y + height * 0.91,
+            text="Dernier tirage",
+            fill=color,
+            font=("Arial", max(6, int(height * 0.045)), "bold"),
+        )
+
+    def _space_fill(self, space: object) -> str:
+        """Choisit une couleur de fond légère selon le type d'une case.
+
+        Entrées:
+            space (object): Case du plateau.
+
+        Sortie:
+            str: Couleur hexadécimale utilisée comme fond de la case.
+        """
+        if isinstance(space, OwnableSpace) and space.mortgaged:
+            return "#D8D8D8"
+        if isinstance(space, ChanceSpace):
+            return "#FFF0D7"
+        if isinstance(space, CommunityChestSpace):
+            return "#E2F0FB"
+        if isinstance(space, GoToJailSpace):
+            return "#F8DFDF"
+        if isinstance(space, JailSpace):
+            return "#ECE6DF"
+        if isinstance(space, FreeParkingSpace):
+            return "#FFF4D6"
+        if isinstance(space, TaxSpace):
+            return "#F6E6E6"
+        if isinstance(space, GoSpace):
+            return "#E3F4E8"
+        return "#FCFCF7"
+
+    def _draw_space(
+        self,
+        space: object,
+        row: int,
+        col: int,
+        offset_x: float,
+        offset_y: float,
+        cell: float,
+    ) -> None:
+        """Dessine une case et les informations pertinentes liées à son état.
+
+        Entrées:
+            space (object): Case du plateau à afficher.
+            row (int): Ligne de grille de la case.
+            col (int): Colonne de grille de la case.
+            offset_x (float): Décalage horizontal du plateau.
+            offset_y (float): Décalage vertical du plateau.
+            cell (float): Taille de la cellule.
+
+        Sortie:
+            None: La case est ajoutée au Canvas.
+        """
+        x1 = offset_x + col * cell
+        y1 = offset_y + row * cell
+        x2 = x1 + cell
+        y2 = y1 + cell
+        self.canvas.create_rectangle(
+            x1, y1, x2, y2,
+            fill=self._space_fill(space),
+            outline="#343A40",
+            width=1,
+        )
+        self._draw_color_band(space, x1, y1, x2, y2, row, col, cell)
+        name = self._short_name(getattr(space, "name", ""))
+        self.canvas.create_text(
+            (x1 + x2) / 2,
+            y1 + cell * 0.45,
+            text=name,
+            width=max(30, cell * 0.84),
+            justify="center",
+            font=("Arial", max(6, int(cell * 0.11)), "bold"),
+            fill="#20252A",
+        )
+        self.canvas.create_text(
+            x1 + 4,
+            y1 + 4,
+            text=str(getattr(space, "index", "")),
+            anchor="nw",
+            font=("Arial", max(6, int(cell * 0.085))),
+            fill="#7A858D",
+        )
+        if isinstance(space, OwnableSpace):
+            self._draw_property_state(space, x1, y1, x2, y2, cell)
+
+    def _draw_color_band(
+        self,
+        space: object,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        row: int,
+        col: int,
+        cell: float,
+    ) -> None:
+        """Dessine la bande colorée d'un terrain selon le côté du plateau.
+
+        Entrées:
+            space (object): Case potentiellement colorée.
+            x1, y1, x2, y2 (float): Limites graphiques de la case.
+            row (int): Ligne de grille.
+            col (int): Colonne de grille.
+            cell (float): Taille d'une cellule.
+
+        Sortie:
+            None: Une bande est ajoutée uniquement pour les terrains de couleur.
+        """
+        if not isinstance(space, Property):
+            return
+        color = COLOR_GROUPS.get(space.color_group, "#CCCCCC")
+        thickness = cell * 0.16
+        if row == 10:
+            coords = (x1, y1, x2, y1 + thickness)
+        elif col == 0:
+            coords = (x2 - thickness, y1, x2, y2)
+        elif row == 0:
+            coords = (x1, y2 - thickness, x2, y2)
+        else:
+            coords = (x1, y1, x1 + thickness, y2)
+        self.canvas.create_rectangle(*coords, fill=color, outline="")
+
+    def _draw_property_state(
+        self,
+        space: OwnableSpace,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        cell: float,
+    ) -> None:
+        """Affiche prix, propriétaire, hypothèque et développement d'un bien.
+
+        Entrées:
+            space (OwnableSpace): Bien à représenter.
+            x1, y1, x2, y2 (float): Limites graphiques de la case.
+            cell (float): Taille d'une cellule pour adapter les textes.
+
+        Sortie:
+            None: Les informations sont ajoutées à la case.
+        """
+        if space.owner is None:
+            footer = f"{space.price} $"
+        else:
+            footer = space.owner.name
+            if space.mortgaged:
+                footer += " • HYP."
+            owner_color = PLAYER_COLORS[space.owner.player_id % len(PLAYER_COLORS)]
+            radius = max(3, cell * 0.045)
+            self.canvas.create_oval(
+                x2 - radius * 3, y2 - radius * 3,
+                x2 - radius, y2 - radius,
+                fill=owner_color, outline="#FFFFFF", width=1,
+            )
+        self.canvas.create_text(
+            (x1 + x2) / 2,
+            y2 - cell * 0.12,
+            text=footer,
+            width=max(30, cell * 0.88),
+            font=("Arial", max(6, int(cell * 0.09))),
+            fill="#4A5056",
+        )
+        if isinstance(space, Property) and space.development_level > 0:
+            buildings = "HÔTEL" if space.hotel else "⌂" * space.houses
+            self.canvas.create_text(
+                (x1 + x2) / 2,
+                y1 + cell * 0.72,
+                text=buildings,
+                font=("Arial", max(7, int(cell * 0.115)), "bold"),
+                fill="#1B5E20",
+            )
+        if isinstance(space, Railroad):
+            icon = "GARE"
+        elif isinstance(space, Utility):
+            icon = "CIE"
+        else:
+            icon = ""
+        if icon:
+            self.canvas.create_text(
+                (x1 + x2) / 2,
+                y1 + cell * 0.68,
+                text=icon,
+                font=("Arial", max(6, int(cell * 0.09)), "bold"),
+                fill="#59636E",
+            )
+
+    def _draw_player(
+        self,
+        player: object,
+        offset_x: float,
+        offset_y: float,
+        cell: float,
+    ) -> None:
+        """Dessine le pion circulaire d'un joueur sur sa case actuelle.
+
+        Entrées:
+            player (object): Joueur possédant ``position`` et ``player_id``.
+            offset_x (float): Décalage horizontal du plateau.
+            offset_y (float): Décalage vertical du plateau.
+            cell (float): Taille d'une cellule.
+
+        Sortie:
+            None: Un pion coloré et son numéro sont ajoutés au Canvas.
+        """
+        row, col = board_grid_position(player.position)
+        x1 = offset_x + col * cell
+        y1 = offset_y + row * cell
+        slot = player.player_id % 6
+        slot_col = slot % 3
+        slot_row = slot // 3
+        radius = max(5, cell * 0.085)
+        center_x = x1 + cell * (0.25 + slot_col * 0.25)
+        center_y = y1 + cell * (0.25 + slot_row * 0.22)
+        color = PLAYER_COLORS[player.player_id % len(PLAYER_COLORS)]
+        self.canvas.create_oval(
+            center_x - radius - 2,
+            center_y - radius + 2,
+            center_x + radius - 2,
+            center_y + radius + 2,
+            fill="#8D9995",
+            outline="",
+        )
+        self.canvas.create_oval(
+            center_x - radius,
+            center_y - radius,
+            center_x + radius,
+            center_y + radius,
+            fill=color,
+            outline="#FFFFFF",
+            width=2,
+        )
+        self.canvas.create_text(
+            center_x,
+            center_y,
+            text=str(player.player_id + 1),
+            font=("Arial", max(6, int(radius * 0.9)), "bold"),
+            fill="#FFFFFF",
+        )
+
+    @staticmethod
+    def _short_name(name: str) -> str:
+        """Raccourcit certains intitulés afin qu'ils restent lisibles dans une case.
+
+        Entrées:
+            name (str): Nom complet de la case.
+
+        Sortie:
+            str: Nom abrégé, éventuellement réparti sur plusieurs lignes.
+        """
+        replacements = {
+            "Caisse de communauté": "Caisse\ncommunauté",
+            "Prison / Simple visite": "Prison /\nVisite",
+            "Impôt sur le revenu": "Impôt",
+            "Allez en prison": "Allez en\nprison",
+            "Taxe de luxe": "Taxe luxe",
+            "Parc Gratuit": "Parc\nGratuit",
+        }
+        return replacements.get(name, name.replace(" ", "\n", 1))

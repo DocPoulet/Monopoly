@@ -1,0 +1,311 @@
+"""Fiche de propriété intégrée directement au plateau graphique."""
+
+from __future__ import annotations
+
+import tkinter as tk
+from tkinter import ttk
+from typing import Callable
+
+from monopoly.player import Player
+from monopoly.properties import OwnableSpace, Property, Railroad, Utility
+
+
+PROPERTY_COLORS = {
+    "brown": "#8B5A2B",
+    "light_blue": "#79CFE8",
+    "pink": "#D95FA6",
+    "orange": "#F39C12",
+    "red": "#E74C3C",
+    "yellow": "#F4D03F",
+    "green": "#27AE60",
+    "dark_blue": "#3156A6",
+}
+
+
+class PropertyCardOverlay(tk.Frame):
+    """Affiche une fiche de bien au-dessus du plateau sans créer de nouvelle fenêtre.
+
+    Entrées:
+        master (tk.Misc): Widget parent, généralement ``BoardView``.
+
+    Sortie:
+        PropertyCardOverlay: Panneau cachable pouvant proposer Achat et Enchères.
+    """
+
+    def __init__(self, master: tk.Misc) -> None:
+        """Construit la structure fixe de la fiche et ses boutons de décision.
+
+        Entrées:
+            master (tk.Misc): Conteneur graphique qui recevra la fiche.
+
+        Sortie:
+            None: La fiche est créée mais reste cachée jusqu'à ``show``.
+        """
+        super().__init__(
+            master,
+            background="#DCE3E7",
+            highlightbackground="#9AA7B0",
+            highlightthickness=1,
+            padx=8,
+            pady=8,
+        )
+        self.player: Player | None = None
+        self.space: OwnableSpace | None = None
+        self.on_buy: Callable[[], None] | None = None
+        self.on_auction: Callable[[], None] | None = None
+
+        self.card = tk.Frame(
+            self,
+            background="#FFFFFF",
+            highlightbackground="#29323A",
+            highlightthickness=2,
+        )
+        self.card.pack(fill="both", expand=True)
+
+        self.header = tk.Frame(self.card, background="#546E7A", height=70)
+        self.header.pack(fill="x")
+        self.header.pack_propagate(False)
+
+        self.type_label = tk.Label(
+            self.header,
+            text="",
+            background="#546E7A",
+            foreground="#FFFFFF",
+            font=("Arial", 9, "bold"),
+        )
+        self.type_label.pack(pady=(8, 0))
+
+        self.name_label = tk.Label(
+            self.header,
+            text="",
+            background="#546E7A",
+            foreground="#FFFFFF",
+            font=("Arial", 16, "bold"),
+        )
+        self.name_label.pack(pady=(1, 7))
+
+        self.body = tk.Frame(self.card, background="#FFFFFF", padx=18, pady=12)
+        self.body.pack(fill="both", expand=True)
+
+        self.price_label = tk.Label(
+            self.body,
+            text="",
+            background="#FFFFFF",
+            foreground="#1F2933",
+            font=("Arial", 11, "bold"),
+        )
+        self.price_label.pack(pady=(0, 7))
+
+        self.details_frame = tk.Frame(self.body, background="#FFFFFF")
+        self.details_frame.pack(fill="x")
+
+        self.mortgage_label = tk.Label(
+            self.body,
+            text="",
+            background="#FFFFFF",
+            foreground="#65717A",
+            font=("Arial", 8),
+        )
+        self.mortgage_label.pack(pady=(8, 2))
+
+        self.cash_label = tk.Label(
+            self.body,
+            text="",
+            background="#FFFFFF",
+            foreground="#27313A",
+            font=("Arial", 9, "bold"),
+        )
+        self.cash_label.pack(pady=(2, 8))
+
+        button_row = ttk.Frame(self.body)
+        button_row.pack(fill="x", pady=(4, 0))
+        button_row.columnconfigure(0, weight=1)
+        button_row.columnconfigure(1, weight=1)
+
+        self.buy_button = ttk.Button(
+            button_row,
+            text="Acheter",
+            style="Primary.TButton",
+            command=self._buy,
+        )
+        self.buy_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        self.auction_button = ttk.Button(
+            button_row,
+            text="Enchères",
+            command=self._auction,
+        )
+        self.auction_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+    def show(
+        self,
+        player: Player,
+        space: OwnableSpace,
+        on_buy: Callable[[], None],
+        on_auction: Callable[[], None],
+    ) -> None:
+        """Charge un bien et affiche sa fiche au centre du plateau.
+
+        Entrées:
+            player (Player): Joueur qui doit prendre la décision d'achat.
+            space (OwnableSpace): Bien libre concerné.
+            on_buy (Callable[[], None]): Action exécutée au clic sur Acheter.
+            on_auction (Callable[[], None]): Action exécutée au clic sur Enchères.
+
+        Sortie:
+            None: La fiche devient visible et interactive.
+        """
+        self.player = player
+        self.space = space
+        self.on_buy = on_buy
+        self.on_auction = on_auction
+
+        header_color = self._header_color(space)
+        self.header.configure(background=header_color)
+        self.type_label.configure(
+            text=self._type_title(space),
+            background=header_color,
+        )
+        self.name_label.configure(
+            text=space.name.upper(),
+            background=header_color,
+        )
+        self.price_label.configure(text=f"PRIX D'ACHAT : {space.price} $")
+        self.mortgage_label.configure(
+            text=f"Valeur hypothécaire : {space.mortgage_value} $"
+        )
+        self.cash_label.configure(text=f"{player.name} possède {player.cash} $")
+        self.buy_button.configure(text=f"Acheter • {space.price} $")
+        self.buy_button.state(
+            ["!disabled"] if player.can_afford(space.price) else ["disabled"]
+        )
+
+        for child in self.details_frame.winfo_children():
+            child.destroy()
+
+        for label, value, bold in self._detail_rows(space):
+            row = tk.Frame(self.details_frame, background="#FFFFFF")
+            row.pack(fill="x", pady=1)
+            font = ("Arial", 8, "bold" if bold else "normal")
+            tk.Label(
+                row,
+                text=label,
+                background="#FFFFFF",
+                foreground="#46515C",
+                font=font,
+            ).pack(side="left")
+            tk.Label(
+                row,
+                text=value,
+                background="#FFFFFF",
+                foreground="#1F2933",
+                font=font,
+            ).pack(side="right")
+
+        self.place(relx=0.5, rely=0.50, anchor="center", width=390)
+        self.lift()
+
+    def hide(self) -> None:
+        """Masque la fiche et oublie les callbacks associés à l'ancienne décision.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: La fiche disparaît du plateau et ses références sont réinitialisées.
+        """
+        self.place_forget()
+        self.player = None
+        self.space = None
+        self.on_buy = None
+        self.on_auction = None
+
+    def _buy(self) -> None:
+        """Déclenche le callback d'achat fourni par la fenêtre de jeu.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback d'achat est exécuté s'il existe.
+        """
+        if self.on_buy is not None:
+            self.on_buy()
+
+    def _auction(self) -> None:
+        """Déclenche le callback d'enchère fourni par la fenêtre de jeu.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback d'enchère est exécuté s'il existe.
+        """
+        if self.on_auction is not None:
+            self.on_auction()
+
+    @staticmethod
+    def _header_color(space: OwnableSpace) -> str:
+        """Retourne la couleur d'en-tête correspondant au type du bien.
+
+        Entrées:
+            space (OwnableSpace): Bien à représenter.
+
+        Sortie:
+            str: Couleur hexadécimale de l'en-tête.
+        """
+        if isinstance(space, Property):
+            return PROPERTY_COLORS.get(space.color_group, "#546E7A")
+        if isinstance(space, Railroad):
+            return "#454B50"
+        return "#2F7D8C"
+
+    @staticmethod
+    def _type_title(space: OwnableSpace) -> str:
+        """Retourne le nom de catégorie affiché au-dessus du nom du bien.
+
+        Entrées:
+            space (OwnableSpace): Bien à identifier.
+
+        Sortie:
+            str: ``TERRAIN``, ``GARE`` ou ``COMPAGNIE``.
+        """
+        if isinstance(space, Property):
+            return "TERRAIN"
+        if isinstance(space, Railroad):
+            return "GARE"
+        return "COMPAGNIE"
+
+    @staticmethod
+    def _detail_rows(space: OwnableSpace) -> list[tuple[str, str, bool]]:
+        """Produit les lignes financières affichées au milieu de la fiche.
+
+        Entrées:
+            space (OwnableSpace): Terrain, gare ou compagnie.
+
+        Sortie:
+            list[tuple[str, str, bool]]: Libellé, valeur et indicateur de gras.
+        """
+        if isinstance(space, Property):
+            return [
+                ("Loyer", f"{space.base_rent} $", True),
+                ("Avec 1 maison", f"{space.house_rents[0]} $", False),
+                ("Avec 2 maisons", f"{space.house_rents[1]} $", False),
+                ("Avec 3 maisons", f"{space.house_rents[2]} $", False),
+                ("Avec 4 maisons", f"{space.house_rents[3]} $", False),
+                ("Avec hôtel", f"{space.hotel_rent} $", True),
+                ("Prix d'une maison", f"{space.house_cost} $", False),
+            ]
+        if isinstance(space, Railroad):
+            return [
+                ("1 gare", "25 $", False),
+                ("2 gares", "50 $", False),
+                ("3 gares", "100 $", False),
+                ("4 gares", "200 $", True),
+            ]
+        if isinstance(space, Utility):
+            return [
+                ("1 compagnie", "4 × le total des dés", False),
+                ("2 compagnies", "10 × le total des dés", True),
+            ]
+        return []

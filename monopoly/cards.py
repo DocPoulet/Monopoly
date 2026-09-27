@@ -263,27 +263,47 @@ class NearestUtilityCard(Card):
     text: str
 
     def apply(self, game: Game, player: Player) -> str:
-        """Va à la prochaine compagnie et facture dix fois un nouveau lancer si occupée.
+        """Va à la prochaine compagnie et ne relance les dés que si un loyer spécial est dû.
 
         Entrées:
             game (Game): Partie utilisée pour chercher la compagnie et relancer les dés.
             player (Player): Joueur déplacé.
 
         Sortie:
-            str: Texte de la carte, nouveau lancer éventuel et effet de la case.
+            str: Texte de la carte, lancer spécial éventuel et effet de la case.
+
+        Notes:
+            Si la compagnie est libre, appartient déjà au joueur ou est hypothéquée,
+            aucun lancer supplémentaire n'est consommé.
         """
         destination = game.board.find_next_space_of_type(player.position, Utility)
-        dice = game.roll_dice()
-        dice_total = sum(dice)
+        utility = game.board[destination]
+
+        if (
+            isinstance(utility, Utility)
+            and utility.owner is not None
+            and utility.owner is not player
+            and not utility.mortgaged
+        ):
+            dice = game.roll_dice()
+            dice_total = sum(dice)
+            effect = game.move_to_and_resolve(
+                player,
+                destination,
+                collect_go=True,
+                dice_total=dice_total,
+                utility_multiplier=10,
+            )
+            detail = f"Nouveau lancer pour la compagnie : {dice[0]} + {dice[1]}."
+            return game.combine_messages(self.text, detail, effect)
+
         effect = game.move_to_and_resolve(
             player,
             destination,
             collect_go=True,
-            dice_total=dice_total,
-            utility_multiplier=10,
+            dice_total=0,
         )
-        detail = f"Nouveau lancer pour la compagnie : {dice[0]} + {dice[1]}."
-        return game.combine_messages(self.text, detail, effect)
+        return game.combine_messages(self.text, effect)
 
 
 @dataclass
@@ -424,8 +444,20 @@ class CardDeck:
         card = self.cards.popleft()
         event = DrawnCardEvent(self.name, card)
         game.drawn_cards_this_turn.append(event)
-        message = card.apply(game, player)
+        game.begin_card_resolution()
+        try:
+            message = card.apply(game, player)
+        finally:
+            game.end_card_resolution()
         event.message = message
+        game.record_event(
+            "card_draw",
+            f"{player.name} pioche : {getattr(card, 'text', type(card).__name__)}",
+            player,
+            deck=self.name,
+            card_type=type(card).__name__,
+            card_text=getattr(card, "text", ""),
+        )
 
         if not card.keep_when_drawn:
             self.cards.append(card)

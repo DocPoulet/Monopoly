@@ -1,0 +1,30 @@
+{
+  "format": "monopoly-rule-preset",
+  "version": 1,
+  "name": "Regle famille",
+  "saved_at": "2026-09-27T04:06:31+02:00",
+  "options": {
+    "starting_cash": 1500,
+    "go_salary": 200,
+    "jail_fine": 50,
+    "max_jail_turns": 3,
+    "doubles_to_jail": 3,
+    "auctions_enabled": false,
+    "free_parking_bonus": 0,
+    "free_parking_card_pot": true,
+    "turn_limit": 0,
+    "property_price_percent": 100,
+    "rent_percent": 100,
+    "monopoly_required_for_building": false,
+    "house_stock": 0,
+    "hotel_stock": 0,
+    "mortgages_enabled": false,
+    "unmortgage_tax_percent": 10,
+    "transferred_mortgages": false,
+    "building_resale_percent": 50,
+    "automatic_rent": true,
+    "construction_anywhere": false,
+    "property_debt_payment": true,
+    "max_buildings_per_action": 1
+  }
+}

@@ -79,7 +79,7 @@ class OwnableSpace(ABC):
         Sortie:
             int: Valeur de l'hypothèque augmentée de 10 %, arrondie au supérieur.
         """
-        return ceil(self.mortgage_value * 1.10)
+        return ceil(self.mortgage_value * 110 / 100)
 
     def buy(self, player: Player) -> bool:
         """Tente de vendre le bien à un joueur au prix indiqué sur la case.

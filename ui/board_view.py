@@ -7,6 +7,7 @@ from tkinter import ttk
 from typing import TYPE_CHECKING, Callable
 
 from monopoly.auction import Auction, AuctionResult
+from monopoly.building_auction import BuildingAuction, BuildingAuctionResult
 from monopoly.cards import DrawnCardEvent
 from monopoly.player import Player
 from monopoly.properties import OwnableSpace, Property, Railroad, Utility
@@ -20,7 +21,14 @@ from monopoly.spaces import (
     TaxSpace,
 )
 from .auction_panel import AuctionOverlay
+from .building_auction_panel import BuildingAuctionOverlay
 from .property_card import PropertyCardOverlay
+from .property_manager import PropertyManagerOverlay
+from .history_panel import HistoryOverlay
+from .landing_build_panel import LandingBuildOverlay
+from .end_game_panel import EndGameOverlay
+from .rules_panel import RulesSummaryOverlay
+from .trade_panel import TradeOverlay
 
 if TYPE_CHECKING:
     from monopoly.game import Game
@@ -110,6 +118,31 @@ def center_deck_rectangles(
     )
 
 
+
+def free_parking_pot_stack_level(amount: int) -> int:
+    """Convertit le montant de cagnotte en hauteur visuelle de pile de billets.
+
+    Entrées:
+        amount (int): Montant actuel de la cagnotte, en dollars.
+
+    Sortie:
+        int: Niveau graphique compris entre zéro et six.
+    """
+    if amount <= 0:
+        return 0
+    if amount < 100:
+        return 1
+    if amount < 250:
+        return 2
+    if amount < 500:
+        return 3
+    if amount < 1000:
+        return 4
+    if amount < 2000:
+        return 5
+    return 6
+
+
 class BoardView(ttk.Frame):
     """Affiche le plateau, ses cartes centrales et la fiche d'achat intégrée.
 
@@ -121,18 +154,26 @@ class BoardView(ttk.Frame):
         BoardView: Vue graphique actualisable du plateau.
     """
 
-    def __init__(self, master: tk.Misc, game: Game) -> None:
+    def __init__(
+        self,
+        master: tk.Misc,
+        game: Game,
+        on_space_clicked: Callable[[OwnableSpace], None] | None = None,
+    ) -> None:
         """Construit le Canvas, le cache de cartes et la fiche de propriété superposée.
 
         Entrées:
             master (tk.Misc): Conteneur parent.
             game (Game): Partie à dessiner.
+            on_space_clicked (Callable | None): Callback de consultation d'un bien.
 
         Sortie:
             None: Le plateau est prêt à être affiché et redimensionné.
         """
         super().__init__(master, style="Board.TFrame")
         self.game = game
+        self.on_space_clicked = on_space_clicked
+        self._board_geometry: tuple[float, float, float] | None = None
         self.last_drawn_cards: dict[str, DrawnCardEvent | None] = {
             "chance": None,
             "community_chest": None,
@@ -146,8 +187,16 @@ class BoardView(ttk.Frame):
         )
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", self._on_resize)
+        self.canvas.bind("<Button-1>", self._on_canvas_click)
         self.property_card = PropertyCardOverlay(self)
+        self.landing_build_panel = LandingBuildOverlay(self)
         self.auction_panel = AuctionOverlay(self)
+        self.building_auction_panel = BuildingAuctionOverlay(self)
+        self.trade_panel = TradeOverlay(self)
+        self.property_manager = PropertyManagerOverlay(self)
+        self.history_panel = HistoryOverlay(self)
+        self.end_game_panel = EndGameOverlay(self)
+        self.rules_panel = RulesSummaryOverlay(self)
 
     def set_game(self, game: Game) -> None:
         """Remplace la partie et réinitialise les éléments temporaires de l'affichage.
@@ -161,7 +210,14 @@ class BoardView(ttk.Frame):
         self.game = game
         self.last_drawn_cards = {"chance": None, "community_chest": None}
         self.property_card.hide()
+        self.landing_build_panel.hide()
         self.auction_panel.hide()
+        self.building_auction_panel.hide()
+        self.trade_panel.hide()
+        self.property_manager.hide()
+        self.history_panel.hide()
+        self.end_game_panel.hide()
+        self.rules_panel.hide()
         self.redraw()
 
     def display_drawn_card(self, event: DrawnCardEvent) -> None:
@@ -196,6 +252,7 @@ class BoardView(ttk.Frame):
             None: La fiche superposée devient visible.
         """
         self.auction_panel.hide()
+        self.landing_build_panel.hide()
         self.property_card.show(player, space, on_buy, on_auction)
 
     def hide_purchase_card(self) -> None:
@@ -208,6 +265,56 @@ class BoardView(ttk.Frame):
             None: La fiche superposée disparaît.
         """
         self.property_card.hide()
+
+
+    def show_landing_build(
+        self,
+        player: Player,
+        property_: Property,
+        on_buy_houses: Callable[[int], None],
+        on_buy_hotel: Callable[[], None],
+        on_pass: Callable[[], None],
+    ) -> None:
+        """Affiche le menu de construction lié au dernier atterrissage.
+
+        Entrées:
+            player (Player): Joueur ayant atterri sur son terrain.
+            property_ (Property): Terrain concerné.
+            on_buy_houses (Callable[[int], None]): Achat groupé de maisons.
+            on_buy_hotel (Callable[[], None]): Achat d'un hôtel.
+            on_pass (Callable[[], None]): Renoncement à construire.
+
+        Sortie:
+            None: Le menu apparaît au centre du plateau.
+        """
+        self.property_card.hide()
+        self.landing_build_panel.hide()
+        self.auction_panel.hide()
+        self.building_auction_panel.hide()
+        self.trade_panel.hide()
+        self.property_manager.hide()
+        self.history_panel.hide()
+        self.rules_panel.hide()
+        self.end_game_panel.hide()
+        self.landing_build_panel.show(
+            self.game,
+            player,
+            property_,
+            on_buy_houses,
+            on_buy_hotel,
+            on_pass,
+        )
+
+    def hide_landing_build(self) -> None:
+        """Masque le menu de construction après atterrissage.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: La superposition disparaît.
+        """
+        self.landing_build_panel.hide()
 
     def show_auction(
         self,
@@ -241,6 +348,280 @@ class BoardView(ttk.Frame):
         if self.property_card.player is None:
             self.property_card.hide()
 
+    def show_trade(
+        self,
+        initiator: Player,
+        on_finished: Callable[[object], None],
+        on_cancel: Callable[[], None],
+    ) -> None:
+        """Affiche le panneau d'échange intégré au centre du plateau.
+
+        Entrées:
+            initiator (Player): Joueur qui ouvre l'échange.
+            on_finished (Callable[[object], None]): Callback recevant le résultat réussi.
+            on_cancel (Callable[[], None]): Callback déclenché si l'échange est annulé.
+
+        Sortie:
+            None: Les autres superpositions sont masquées et l'échange apparaît.
+        """
+        self.property_card.hide()
+        self.auction_panel.hide()
+        self.trade_panel.show(
+            self.game,
+            initiator,
+            on_finished=on_finished,
+            on_cancel=on_cancel,
+        )
+
+    def hide_trade(self) -> None:
+        """Masque le panneau d'échange intégré.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le panneau disparaît et oublie son état temporaire.
+        """
+        self.trade_panel.hide()
+
+    def show_property_manager(
+        self,
+        player: Player,
+        on_close: Callable[[bool], None],
+        on_changed: Callable[[], None],
+        on_building_auction: Callable[[str, Property], None],
+    ) -> None:
+        """Affiche la gestion des propriétés directement au centre du plateau.
+
+        Entrées:
+            player (Player): Joueur dont le patrimoine doit être géré.
+            on_close (Callable[[bool], None]): Callback appelé à la fermeture.
+            on_changed (Callable[[], None]): Callback après une modification réussie.
+            on_building_auction (Callable[[str, Property], None]): Callback de pénurie.
+
+        Sortie:
+            None: Les autres superpositions sont masquées et le gestionnaire apparaît.
+        """
+        self.property_card.hide()
+        self.landing_build_panel.hide()
+        self.auction_panel.hide()
+        self.building_auction_panel.hide()
+        self.trade_panel.hide()
+        self.property_manager.show(
+            self.game,
+            player,
+            on_close=on_close,
+            on_changed=on_changed,
+            on_building_auction=on_building_auction,
+        )
+
+    def hide_property_manager(self) -> None:
+        """Masque le panneau intégré de gestion des propriétés.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le gestionnaire disparaît du plateau.
+        """
+        self.property_manager.hide()
+
+    def show_building_auction(
+        self,
+        auction: BuildingAuction,
+        on_finished: Callable[[BuildingAuctionResult], None],
+    ) -> None:
+        """Affiche une enchère de maison ou d'hôtel au centre du plateau.
+
+        Entrées:
+            auction (BuildingAuction): Enchère métier à piloter.
+            on_finished (Callable[[BuildingAuctionResult], None]): Callback final.
+
+        Sortie:
+            None: Les autres superpositions disparaissent pendant l'enchère.
+        """
+        self.property_card.hide()
+        self.landing_build_panel.hide()
+        self.auction_panel.hide()
+        self.trade_panel.hide()
+        self.property_manager.hide()
+        self.building_auction_panel.show(auction, on_finished)
+
+    def hide_building_auction(self) -> None:
+        """Masque le panneau d'enchère de bâtiment.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le panneau disparaît et oublie son état temporaire.
+        """
+        self.building_auction_panel.hide()
+
+    def show_history(
+        self,
+        on_close: Callable[[], None],
+    ) -> None:
+        """Affiche historique et statistiques au centre du plateau.
+
+        Entrées:
+            on_close (Callable[[], None]): Callback exécuté à la fermeture.
+
+        Sortie:
+            None: Les autres superpositions sont masquées et le panneau apparaît.
+        """
+        self.property_card.hide()
+        self.auction_panel.hide()
+        self.building_auction_panel.hide()
+        self.trade_panel.hide()
+        self.property_manager.hide()
+        self.history_panel.show(self.game, on_close)
+
+    def hide_history(self) -> None:
+        """Masque le panneau d'historique et statistiques.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le panneau disparaît du plateau.
+        """
+        self.history_panel.hide()
+
+    def show_space_info(
+        self,
+        space: OwnableSpace,
+        on_close: Callable[[], None],
+    ) -> None:
+        """Affiche la fiche de consultation d'un bien cliqué.
+
+        Entrées:
+            space (OwnableSpace): Bien à consulter.
+            on_close (Callable[[], None]): Callback de fermeture.
+
+        Sortie:
+            None: La fiche apparaît en lecture seule au centre du plateau.
+        """
+        self.auction_panel.hide()
+        self.building_auction_panel.hide()
+        self.trade_panel.hide()
+        self.property_manager.hide()
+        self.history_panel.hide()
+        self.end_game_panel.hide()
+        self.property_card.show_info(space, on_close)
+
+    def show_end_game(
+        self,
+        on_history: Callable[[], None],
+        on_new_game: Callable[[], None],
+    ) -> None:
+        """Affiche le bilan final intégré de la partie.
+
+        Entrées:
+            on_history (Callable[[], None]): Callback ouvrant l'historique.
+            on_new_game (Callable[[], None]): Callback retournant au menu.
+
+        Sortie:
+            None: Le panneau final masque les autres superpositions.
+        """
+        self.property_card.hide()
+        self.auction_panel.hide()
+        self.building_auction_panel.hide()
+        self.trade_panel.hide()
+        self.property_manager.hide()
+        self.history_panel.hide()
+        self.end_game_panel.show(self.game, on_history, on_new_game)
+
+    def hide_end_game(self) -> None:
+        """Masque le panneau final.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le bilan final disparaît.
+        """
+        self.end_game_panel.hide()
+
+    def space_at_canvas_point(
+        self,
+        x: float,
+        y: float,
+    ) -> OwnableSpace | None:
+        """Identifie le bien achetable situé sous une coordonnée du Canvas.
+
+        Entrées:
+            x (float): Coordonnée horizontale du clic.
+            y (float): Coordonnée verticale du clic.
+
+        Sortie:
+            OwnableSpace | None: Bien correspondant à la case, sinon ``None``.
+        """
+        if self._board_geometry is None:
+            return None
+
+        offset_x, offset_y, cell = self._board_geometry
+        col = int((x - offset_x) // cell)
+        row = int((y - offset_y) // cell)
+        if not 0 <= row <= 10 or not 0 <= col <= 10:
+            return None
+        if 1 <= row <= 9 and 1 <= col <= 9:
+            return None
+
+        for index, space in enumerate(self.game.board.spaces):
+            grid_row, grid_col = board_grid_position(index)
+            if grid_row == row and grid_col == col and isinstance(space, OwnableSpace):
+                return space
+        return None
+
+    def _on_canvas_click(self, event: tk.Event) -> None:
+        """Transmet au contrôleur un clic effectué sur une case achetable.
+
+        Entrées:
+            event (tk.Event): Événement souris contenant les coordonnées du Canvas.
+
+        Sortie:
+            None: Le callback reçoit le bien cliqué lorsqu'il existe.
+        """
+        if self.on_space_clicked is None:
+            return
+        space = self.space_at_canvas_point(event.x, event.y)
+        if space is not None:
+            self.on_space_clicked(space)
+
+
+    def show_rules(
+        self,
+        on_close: Callable[[], None],
+    ) -> None:
+        """Affiche les règles actives et l'audit au centre du plateau.
+
+        Entrées:
+            on_close (Callable[[], None]): Callback exécuté à la fermeture.
+
+        Sortie:
+            None: Les autres superpositions sont masquées et le panneau apparaît.
+        """
+        self.property_card.hide()
+        self.auction_panel.hide()
+        self.building_auction_panel.hide()
+        self.trade_panel.hide()
+        self.property_manager.hide()
+        self.history_panel.hide()
+        self.end_game_panel.hide()
+        self.rules_panel.show(self.game, on_close)
+
+    def hide_rules(self) -> None:
+        """Masque le panneau de règles.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le panneau disparaît du plateau.
+        """
+        self.rules_panel.hide()
+
     def _on_resize(self, event: tk.Event) -> None:
         """Redessine le plateau lorsque la taille du Canvas change.
 
@@ -268,6 +649,7 @@ class BoardView(ttk.Frame):
         offset_x = (width - size) / 2
         offset_y = (height - size) / 2
         cell = size / 11
+        self._board_geometry = (offset_x, offset_y, cell)
 
         self.canvas.create_rectangle(
             offset_x + 7,
@@ -326,6 +708,9 @@ class BoardView(ttk.Frame):
             fill="#61706B",
         )
 
+        if self.game.options.free_parking_card_pot:
+            self._draw_free_parking_pot(center_x, center_y, cell)
+
         community_rect, chance_rect = center_deck_rectangles(
             x1, x2, center_y, cell
         )
@@ -342,6 +727,85 @@ class BoardView(ttk.Frame):
             "#E59B31",
             "?",
             self.last_drawn_cards["chance"],
+        )
+
+
+    def _draw_free_parking_pot(
+        self,
+        center_x: float,
+        center_y: float,
+        cell: float,
+    ) -> None:
+        """Dessine une pile de billets dont la hauteur dépend de la cagnotte.
+
+        Entrées:
+            center_x (float): Centre horizontal de la zone intérieure.
+            center_y (float): Centre vertical de la zone intérieure.
+            cell (float): Taille d'une case utilisée comme unité graphique.
+
+        Sortie:
+            None: Une pile graduée et son montant apparaissent au milieu du plateau.
+        """
+        amount = max(0, int(self.game.free_parking_pot))
+        level = free_parking_pot_stack_level(amount)
+
+        base_y = center_y - cell * 0.16
+        bill_w = cell * 0.86
+        bill_h = cell * 0.23
+        step = cell * 0.075
+
+        self.canvas.create_text(
+            center_x,
+            center_y - cell * 0.72,
+            text="CAGNOTTE PARC GRATUIT",
+            font=("Arial", max(7, int(cell * 0.12)), "bold"),
+            fill="#2E5D3B",
+        )
+
+        if level == 0:
+            self.canvas.create_rectangle(
+                center_x - bill_w / 2,
+                base_y - bill_h / 2,
+                center_x + bill_w / 2,
+                base_y + bill_h / 2,
+                fill="#E5EFE7",
+                outline="#7EA287",
+                width=2,
+            )
+            self.canvas.create_text(
+                center_x,
+                base_y,
+                text="$",
+                font=("Arial", max(10, int(cell * 0.18)), "bold"),
+                fill="#88A990",
+            )
+        else:
+            for index in range(level):
+                y = base_y - index * step
+                x_shift = (index % 2) * cell * 0.045
+                self.canvas.create_rectangle(
+                    center_x - bill_w / 2 + x_shift,
+                    y - bill_h / 2,
+                    center_x + bill_w / 2 + x_shift,
+                    y + bill_h / 2,
+                    fill="#CFE8D2",
+                    outline="#3D7A4A",
+                    width=2,
+                )
+                self.canvas.create_text(
+                    center_x + x_shift,
+                    y,
+                    text="$",
+                    font=("Arial", max(9, int(cell * 0.15)), "bold"),
+                    fill="#2E6D3C",
+                )
+
+        self.canvas.create_text(
+            center_x,
+            center_y + cell * 0.02,
+            text=f"{amount} $",
+            font=("Arial", max(10, int(cell * 0.18)), "bold"),
+            fill="#263238",
         )
 
     def _draw_deck(
@@ -544,6 +1008,43 @@ class BoardView(ttk.Frame):
             coords = (x1, y1, x1 + thickness, y2)
         self.canvas.create_rectangle(*coords, fill=color, outline="")
 
+    def _current_rent_label(self, space: OwnableSpace) -> str:
+        """Construit le loyer actuellement applicable pour un bien possédé.
+
+        Entrées:
+            space (OwnableSpace): Terrain, gare ou compagnie dont le loyer doit être affiché.
+
+        Sortie:
+            str: Montant actuel en dollars, multiplicateur de dés pour une compagnie,
+            ou chaîne vide lorsque le bien n'a pas de propriétaire ou est hypothéqué.
+        """
+        if space.owner is None or space.mortgaged:
+            return ""
+
+        if isinstance(space, Utility):
+            owned_count = sum(
+                1
+                for property_ in space.owner.properties
+                if isinstance(property_, Utility)
+            )
+            multiplier = 10 if owned_count >= 2 else 4
+            suffix = (
+                ""
+                if self.game.options.rent_percent == 100
+                else f" × {self.game.options.rent_percent} %"
+            )
+            return f"{multiplier}× dés{suffix}"
+
+        if isinstance(space, Railroad):
+            rent = self.game.rules.calculate_rent(space, 0)
+            return f"{rent} $"
+
+        if isinstance(space, Property):
+            rent = self.game.rules.calculate_rent(space, 0)
+            return f"{rent} $"
+
+        return ""
+
     def _draw_property_state(
         self,
         space: OwnableSpace,
@@ -553,7 +1054,7 @@ class BoardView(ttk.Frame):
         y2: float,
         cell: float,
     ) -> None:
-        """Affiche prix, propriétaire, hypothèque et développement d'un bien.
+        """Affiche propriétaire, loyer actuel, hypothèque et développement d'un bien.
 
         Entrées:
             space (OwnableSpace): Bien à représenter.
@@ -561,7 +1062,7 @@ class BoardView(ttk.Frame):
             cell (float): Taille d'une cellule pour adapter les textes.
 
         Sortie:
-            None: Les informations sont ajoutées à la case.
+            None: Les informations courantes sont ajoutées à la case.
         """
         if space.owner is None:
             footer = f"{space.price} $"
@@ -569,42 +1070,65 @@ class BoardView(ttk.Frame):
             footer = space.owner.name
             if space.mortgaged:
                 footer += " • HYP."
-            owner_color = PLAYER_COLORS[space.owner.player_id % len(PLAYER_COLORS)]
+
+            owner_color = PLAYER_COLORS[
+                space.owner.player_id % len(PLAYER_COLORS)
+            ]
             radius = max(3, cell * 0.045)
             self.canvas.create_oval(
-                x2 - radius * 3, y2 - radius * 3,
-                x2 - radius, y2 - radius,
-                fill=owner_color, outline="#FFFFFF", width=1,
+                x2 - radius * 3,
+                y2 - radius * 3,
+                x2 - radius,
+                y2 - radius,
+                fill=owner_color,
+                outline="#FFFFFF",
+                width=1,
             )
+
         self.canvas.create_text(
             (x1 + x2) / 2,
-            y2 - cell * 0.12,
+            y2 - cell * 0.075,
             text=footer,
-            width=max(30, cell * 0.88),
-            font=("Arial", max(6, int(cell * 0.09))),
+            width=max(30, cell * 0.84),
+            font=("Arial", max(6, int(cell * 0.08))),
             fill="#4A5056",
         )
+
+        if space.owner is not None and not space.mortgaged:
+            rent_label = self._current_rent_label(space)
+            if rent_label:
+                self.canvas.create_text(
+                    (x1 + x2) / 2,
+                    y1 + cell * 0.77,
+                    text=f"Loyer {rent_label}",
+                    width=max(30, cell * 0.86),
+                    font=("Arial", max(6, int(cell * 0.075)), "bold"),
+                    fill="#2D3A42",
+                )
+
         if isinstance(space, Property) and space.development_level > 0:
             buildings = "HÔTEL" if space.hotel else "⌂" * space.houses
             self.canvas.create_text(
                 (x1 + x2) / 2,
-                y1 + cell * 0.72,
+                y1 + cell * 0.63,
                 text=buildings,
-                font=("Arial", max(7, int(cell * 0.115)), "bold"),
+                font=("Arial", max(7, int(cell * 0.11)), "bold"),
                 fill="#1B5E20",
             )
+
         if isinstance(space, Railroad):
             icon = "GARE"
         elif isinstance(space, Utility):
             icon = "CIE"
         else:
             icon = ""
+
         if icon:
             self.canvas.create_text(
                 (x1 + x2) / 2,
-                y1 + cell * 0.68,
+                y1 + cell * 0.61,
                 text=icon,
-                font=("Arial", max(6, int(cell * 0.09)), "bold"),
+                font=("Arial", max(6, int(cell * 0.085)), "bold"),
                 fill="#59636E",
             )
 

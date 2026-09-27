@@ -123,29 +123,48 @@ class JailSpace(Space):
         return f"{player.name} est en simple visite."
 
 
+
 @dataclass
 class FreeParkingSpace(Space):
-    """Représente la case Parc Gratuit sans cagnotte maison.
+    """Représente le Parc Gratuit avec bonus fixe et cagnotte optionnels.
 
     Entrées:
         index (int): Position de la case.
         name (str): Nom affiché de la case.
 
     Sortie:
-        FreeParkingSpace: Une case neutre sans effet financier.
+        FreeParkingSpace: Case capable de verser les variantes configurées.
     """
 
     def land(self, game: Game, player: Player, dice_total: int) -> str:
-        """Traite l'arrivée sur le Parc Gratuit sans modifier la partie.
+        """Verse les variantes de Parc Gratuit activées puis réinitialise la cagnotte.
 
         Entrées:
-            game (Game): Partie courante, non modifiée ici.
+            game (Game): Partie contenant les options et la cagnotte.
             player (Player): Joueur arrivant sur la case.
-            dice_total (int): Somme des dés, non utilisée ici.
+            dice_total (int): Somme des dés, non utilisée.
 
         Sortie:
-            str: Message signalant le passage sur le Parc Gratuit.
+            str: Message détaillant bonus fixe et cagnotte récupérée.
         """
+        messages: list[str] = []
+        bonus = game.options.free_parking_bonus
+        if bonus > 0:
+            player.receive(bonus)
+            game.record_event(
+                "free_parking_bonus",
+                f"{player.name} reçoit {bonus} $ de bonus au Parc Gratuit.",
+                player,
+                amount=bonus,
+            )
+            messages.append(f"bonus fixe {bonus} $")
+
+        pot = game.collect_free_parking_pot(player)
+        if pot > 0:
+            messages.append(f"cagnotte {pot} $")
+
+        if messages:
+            return f"{player.name} reçoit " + " et ".join(messages) + "."
         return f"{player.name} se repose au Parc Gratuit."
 
 

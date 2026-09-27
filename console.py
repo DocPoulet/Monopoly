@@ -36,15 +36,15 @@ def choose_jail_action(game: Game, player: Player) -> str:
         str: ``"roll"``, ``"pay"`` ou ``"card"`` selon le choix valide obtenu.
     """
     options = ["r = tenter un double"]
-    if player.can_afford(game.rules.JAIL_FINE):
-        options.append(f"p = payer {game.rules.JAIL_FINE}")
+    if player.can_afford(game.rules.jail_fine):
+        options.append(f"p = payer {game.rules.jail_fine}")
     if player.held_cards:
         options.append("c = utiliser une carte sortie de prison")
 
     print("Prison : " + " | ".join(options))
     choice = input("Choix [r] : ").strip().lower() or "r"
 
-    if choice == "p" and player.can_afford(game.rules.JAIL_FINE):
+    if choice == "p" and player.can_afford(game.rules.jail_fine):
         return "pay"
     if choice == "c" and player.held_cards:
         return "card"
@@ -200,7 +200,7 @@ def main() -> None:
 
     while not game.is_over:
         player = game.current_player
-        print(f"\n--- Tour de {player.name} ---")
+        print(f"\n--- Tour {game.upcoming_turn_number} — {player.name} ---")
 
         jail_action = choose_jail_action(game, player) if player.in_jail else "roll"
         result = game.take_turn(jail_action=jail_action)

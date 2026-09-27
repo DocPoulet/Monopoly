@@ -137,6 +137,15 @@ class PropertyCardOverlay(tk.Frame):
         )
         self.auction_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
+        self.close_button = ttk.Button(
+            self.button_row,
+            text="Fermer",
+            command=self._close_info,
+        )
+        self.close_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.close_button.grid_remove()
+        self.on_close: Callable[[], None] | None = None
+
     def _populate_space(self, space: OwnableSpace) -> None:
         """Remplit la fiche avec les informations financières d'un bien.
 
@@ -164,7 +173,7 @@ class PropertyCardOverlay(tk.Frame):
         for child in self.details_frame.winfo_children():
             child.destroy()
 
-        for label, value, bold in self._detail_rows(space):
+        for label, value, bold in self._display_detail_rows(space):
             row = tk.Frame(self.details_frame, background="#FFFFFF")
             row.pack(fill="x", pady=1)
             font = ("Arial", 8, "bold" if bold else "normal")
@@ -212,9 +221,75 @@ class PropertyCardOverlay(tk.Frame):
         self.buy_button.state(
             ["!disabled"] if player.can_afford(space.price) else ["disabled"]
         )
+        self.buy_button.grid()
+        self.auction_button.grid()
+        self.close_button.grid_remove()
         self.button_row.pack(fill="x", pady=(4, 0))
 
         self.place(relx=0.5, rely=0.50, anchor="center", width=390)
+        self.lift()
+
+    def show_info(
+        self,
+        space: OwnableSpace,
+        on_close: Callable[[], None],
+    ) -> None:
+        """Affiche une fiche en lecture seule après un clic direct sur le plateau.
+
+        Entrées:
+            space (OwnableSpace): Bien à consulter.
+            on_close (Callable[[], None]): Callback appelé lorsque la fiche est fermée.
+
+        Sortie:
+            None: La fiche apparaît avec propriétaire, état et loyer courant.
+        """
+        self.player = None
+        self.space = space
+        self.on_buy = None
+        self.on_auction = None
+        self.on_close = on_close
+        self._populate_space(space)
+
+        if space.owner is None:
+            status = f"Bien libre • prix : {space.price} $"
+        elif space.mortgaged:
+            status = (
+                f"Propriétaire : {space.owner.name} • HYPOTHÉQUÉ • "
+                f"levée : {self.master.game.rules.unmortgage_cost(space)} $"
+            )
+        else:
+            if isinstance(space, Utility):
+                count = sum(
+                    1
+                    for item in space.owner.properties
+                    if isinstance(item, Utility)
+                )
+                current_rent = (
+                    f"{10 if count >= 2 else 4}× dés"
+                    + (
+                        ""
+                        if self.master.game.options.rent_percent == 100
+                        else f" × {self.master.game.options.rent_percent} %"
+                    )
+                )
+            else:
+                current_rent = f"{self.master.game.rules.calculate_rent(space, 0)} $"
+            status = (
+                f"Propriétaire : {space.owner.name} • loyer actuel : {current_rent}"
+            )
+
+        if isinstance(space, Property):
+            if space.hotel:
+                status += " • hôtel"
+            elif space.houses:
+                status += f" • {space.houses} maison(s)"
+
+        self.cash_label.configure(text=status)
+        self.buy_button.grid_remove()
+        self.auction_button.grid_remove()
+        self.close_button.grid()
+        self.button_row.pack(fill="x", pady=(4, 0))
+        self.place(relx=0.5, rely=0.50, anchor="center", width=410)
         self.lift()
 
     def show_for_auction(
@@ -239,6 +314,7 @@ class PropertyCardOverlay(tk.Frame):
         self.on_auction = None
         self._populate_space(space)
         self.cash_label.configure(text="PROPRIÉTÉ AUX ENCHÈRES")
+        self.close_button.grid_remove()
         self.button_row.pack_forget()
         self.place(relx=relx, rely=0.50, anchor="center", width=width)
         self.lift()
@@ -257,6 +333,21 @@ class PropertyCardOverlay(tk.Frame):
         self.space = None
         self.on_buy = None
         self.on_auction = None
+        self.on_close = None
+
+    def _close_info(self) -> None:
+        """Ferme une fiche de consultation ouverte depuis le plateau.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback de fermeture est exécuté s'il existe.
+        """
+        callback = self.on_close
+        self.hide()
+        if callback is not None:
+            callback()
 
     def _buy(self) -> None:
         """Déclenche le callback d'achat fourni par la fenêtre de jeu.
@@ -314,15 +405,68 @@ class PropertyCardOverlay(tk.Frame):
             return "GARE"
         return "COMPAGNIE"
 
+
+
+    def _display_detail_rows(self, space: OwnableSpace) -> list[tuple[str, str, bool]]:
+        """Produit le barème visible après application du pourcentage de loyer.
+
+        Entrées:
+            space (OwnableSpace): Bien dont le barème doit être affiché.
+
+        Sortie:
+            list[tuple[str, str, bool]]: Lignes ajustées aux règles de la partie.
+        """
+        game = self.master.game
+        if isinstance(space, Property):
+            rows: list[tuple[str, str, bool]] = []
+            if space.owner is not None:
+                current_rent = game.rules.calculate_rent(space, 0)
+                current_suffix = " • HYPOTHÉQUÉ" if space.mortgaged else ""
+                rows.append(
+                    (
+                        "LOYER ACTUEL",
+                        f"{current_rent} ${current_suffix}",
+                        True,
+                    )
+                )
+
+            current_level = space.development_level
+            rows.extend(
+                [
+                    ("Loyer sans maison", f"{game.rules.scale_rent(space.base_rent)} $", current_level == 0),
+                    ("Avec 1 maison", f"{game.rules.scale_rent(space.house_rents[0])} $", current_level == 1),
+                    ("Avec 2 maisons", f"{game.rules.scale_rent(space.house_rents[1])} $", current_level == 2),
+                    ("Avec 3 maisons", f"{game.rules.scale_rent(space.house_rents[2])} $", current_level == 3),
+                    ("Avec 4 maisons", f"{game.rules.scale_rent(space.house_rents[3])} $", current_level == 4),
+                    ("Avec hôtel", f"{game.rules.scale_rent(space.hotel_rent)} $", current_level == 5),
+                    ("Prix d'une maison", f"{space.house_cost} $", False),
+                ]
+            )
+            return rows
+        if isinstance(space, Railroad):
+            return [
+                ("1 gare", f"{game.rules.scale_rent(25)} $", False),
+                ("2 gares", f"{game.rules.scale_rent(50)} $", False),
+                ("3 gares", f"{game.rules.scale_rent(100)} $", False),
+                ("4 gares", f"{game.rules.scale_rent(200)} $", True),
+            ]
+        if isinstance(space, Utility):
+            suffix = "" if game.options.rent_percent == 100 else f" × {game.options.rent_percent} %"
+            return [
+                ("1 compagnie", f"4 × le total des dés{suffix}", False),
+                ("2 compagnies", f"10 × le total des dés{suffix}", True),
+            ]
+        return []
+
     @staticmethod
     def _detail_rows(space: OwnableSpace) -> list[tuple[str, str, bool]]:
-        """Produit les lignes financières affichées au milieu de la fiche.
+        """Produit les lignes financières classiques utilisées par les tests et helpers.
 
         Entrées:
             space (OwnableSpace): Terrain, gare ou compagnie.
 
         Sortie:
-            list[tuple[str, str, bool]]: Libellé, valeur et indicateur de gras.
+            list[tuple[str, str, bool]]: Libellé, valeur classique et indicateur de gras.
         """
         if isinstance(space, Property):
             return [
@@ -347,3 +491,4 @@ class PropertyCardOverlay(tk.Frame):
                 ("2 compagnies", "10 × le total des dés", True),
             ]
         return []
+

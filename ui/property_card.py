@@ -264,8 +264,9 @@ class PropertyCardOverlay(tk.Frame):
                     for item in space.owner.properties
                     if isinstance(item, Utility)
                 )
+                current_multiplier = space.multipliers[1] if count >= 2 else space.multipliers[0]
                 current_rent = (
-                    f"{10 if count >= 2 else 4}× dés"
+                    f"{current_multiplier}× dés"
                     + (
                         ""
                         if self.master.game.options.rent_percent == 100
@@ -445,16 +446,14 @@ class PropertyCardOverlay(tk.Frame):
             return rows
         if isinstance(space, Railroad):
             return [
-                ("1 gare", f"{game.rules.scale_rent(25)} $", False),
-                ("2 gares", f"{game.rules.scale_rent(50)} $", False),
-                ("3 gares", f"{game.rules.scale_rent(100)} $", False),
-                ("4 gares", f"{game.rules.scale_rent(200)} $", True),
+                (f"{index} gare" if index == 1 else f"{index} gares", f"{game.rules.scale_rent(value)} $", index == 4)
+                for index, value in enumerate(space.rent_values, start=1)
             ]
         if isinstance(space, Utility):
             suffix = "" if game.options.rent_percent == 100 else f" × {game.options.rent_percent} %"
             return [
-                ("1 compagnie", f"4 × le total des dés{suffix}", False),
-                ("2 compagnies", f"10 × le total des dés{suffix}", True),
+                ("1 compagnie", f"{space.multipliers[0]} × le total des dés{suffix}", False),
+                ("2 compagnies", f"{space.multipliers[1]} × le total des dés{suffix}", True),
             ]
         return []
 
@@ -480,15 +479,13 @@ class PropertyCardOverlay(tk.Frame):
             ]
         if isinstance(space, Railroad):
             return [
-                ("1 gare", "25 $", False),
-                ("2 gares", "50 $", False),
-                ("3 gares", "100 $", False),
-                ("4 gares", "200 $", True),
+                (f"{index} gare" if index == 1 else f"{index} gares", f"{value} $", index == 4)
+                for index, value in enumerate(space.rent_values, start=1)
             ]
         if isinstance(space, Utility):
             return [
-                ("1 compagnie", "4 × le total des dés", False),
-                ("2 compagnies", "10 × le total des dés", True),
+                ("1 compagnie", f"{space.multipliers[0]} × le total des dés", False),
+                ("2 compagnies", f"{space.multipliers[1]} × le total des dés", True),
             ]
         return []
 

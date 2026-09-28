@@ -444,12 +444,32 @@ class CardDeck:
         card = self.cards.popleft()
         event = DrawnCardEvent(self.name, card)
         game.drawn_cards_this_turn.append(event)
+
+        cash_before = {item.player_id: item.cash for item in game.players}
+        position_before = player.position
+        jail_before = player.in_jail
+        held_before = len(player.held_cards)
+        pot_before = game.free_parking_pot
+
         game.begin_card_resolution()
         try:
             message = card.apply(game, player)
         finally:
             game.end_card_resolution()
         event.message = message
+
+        cash_after = {item.player_id: item.cash for item in game.players}
+        drawer_cash_delta = cash_after[player.player_id] - cash_before[player.player_id]
+        other_players_cash_delta = sum(
+            cash_after[item.player_id] - cash_before[item.player_id]
+            for item in game.players
+            if item.player_id != player.player_id
+        )
+        total_player_cash_delta = sum(
+            cash_after[item.player_id] - cash_before[item.player_id]
+            for item in game.players
+        )
+
         game.record_event(
             "card_draw",
             f"{player.name} pioche : {getattr(card, 'text', type(card).__name__)}",
@@ -457,6 +477,15 @@ class CardDeck:
             deck=self.name,
             card_type=type(card).__name__,
             card_text=getattr(card, "text", ""),
+            drawer_cash_delta=drawer_cash_delta,
+            other_players_cash_delta=other_players_cash_delta,
+            total_player_cash_delta=total_player_cash_delta,
+            free_parking_pot_delta=game.free_parking_pot - pot_before,
+            position_before=position_before,
+            position_after=player.position,
+            moved=player.position != position_before,
+            sent_to_jail=(not jail_before and player.in_jail),
+            get_out_card_received=len(player.held_cards) > held_before,
         )
 
         if not card.keep_when_drawn:

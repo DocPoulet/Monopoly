@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -15,7 +16,11 @@ from monopoly.trade import TradeResult
 from .board_view import BoardView, PLAYER_COLORS
 from .debt_dialog import DebtManagementDialog
 from .mortgage_transfer_dialog import ReceivedMortgageDialog
+from .turn_transition import TurnTransitionOverlay
 from .widgets import DiceFace
+from .audio import AudioManager
+from .player_card import PlayerStatusCard
+from .theme import VisualPreferences
 
 
 class GameWindow(ttk.Frame):
@@ -39,6 +44,7 @@ class GameWindow(ttk.Frame):
         new_game_callback: object,
         save_game_callback: object | None = None,
         loaded: bool = False,
+        visual_preferences: VisualPreferences | None = None,
     ) -> None:
         """Construit le plateau, les dés cliquables et les informations joueurs.
 
@@ -48,12 +54,20 @@ class GameWindow(ttk.Frame):
             new_game_callback (object): Callback ramenant au menu après confirmation.
             save_game_callback (object | None): Callback de sauvegarde JSON.
             loaded (bool): ``True`` pour une partie restaurée.
+            visual_preferences (VisualPreferences | None): Apparence V22 de la partie.
 
         Sortie:
             None: Tous les widgets sont créés et synchronisés.
         """
-        super().__init__(master, padding=10)
+        super().__init__(master, padding=8)
         self.game = game
+        self.visual_preferences = visual_preferences or VisualPreferences.default()
+        sound_directory = Path(__file__).resolve().parent.parent / "assets" / "sounds"
+        self.audio = AudioManager(
+            self,
+            sound_directory,
+            enabled=self.visual_preferences.sound_enabled,
+        )
         self.new_game_callback = new_game_callback
         self.save_game_callback = save_game_callback
         self.loaded = loaded
@@ -68,25 +82,61 @@ class GameWindow(ttk.Frame):
         self.history_in_progress = False
         self.rules_in_progress = False
         self.inspection_in_progress = False
+        self.card_reveal_in_progress = False
+        self._card_reveal_queue: list[object] = []
+        self.turn_animation_in_progress = False
+        self._turn_animation_phase = ""
+        self._dice_animations_remaining = 0
+        self._pending_visual_turn: dict[str, object] | None = None
         self.end_game_shown = False
+        self.abandon_summary_shown = False
+        self.private_turn_screen_enabled = True
+        self.turn_transition_in_progress = False
+        self._revealed_player_id = self.game.current_player.player_id
+        self._transition_target_player_id: int | None = None
+        self._keyboard_bindings: list[tuple[str, str]] = []
+        self._last_cash_snapshot = {
+            player.player_id: player.cash for player in self.game.players
+        }
+        self._last_position_snapshot = {
+            player.player_id: player.position for player in self.game.players
+        }
         self.game.set_debt_manager(self._manage_debt)
         self.game.set_received_mortgage_selector(
             self._choose_received_mortgages_to_lift
         )
 
-        self.columnconfigure(0, weight=3)
-        self.columnconfigure(1, weight=2)
+        self.columnconfigure(0, weight=8)
+        self.columnconfigure(1, weight=0, minsize=305)
         self.rowconfigure(0, weight=1)
 
+        # La scène centrale regroupe plateau et HUD joueur flottant. Le rail gauche
+        # de V22.1 est conservé uniquement comme parent technique invisible pour
+        # d'anciennes extensions/tests.
+        self.player_rail = ttk.Frame(self, style="V22SurfaceAlt.TFrame", padding=0)
+        self.player_rail.columnconfigure(0, weight=1)
+
+        self.board_stage = ttk.Frame(self, style="V22SurfaceAlt.TFrame", padding=0)
+        self.board_stage.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.board_stage.rowconfigure(0, weight=1)
+        self.board_stage.columnconfigure(0, weight=1)
+
         self.board_view = BoardView(
-            self,
+            self.board_stage,
             game,
             on_space_clicked=self._inspect_space,
+            visual_preferences=self.visual_preferences,
         )
-        self.board_view.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.board_view.grid(row=0, column=0, sticky="nsew")
 
-        self.sidebar = ttk.Frame(self)
-        self.sidebar.grid(row=0, column=1, sticky="nsew")
+        self.sidebar = ttk.Frame(
+            self,
+            style="V22SurfaceAlt.TFrame",
+            padding=8,
+            width=305,
+        )
+        self.sidebar.grid(row=0, column=1, sticky="ns")
+        self.sidebar.grid_propagate(False)
         self.sidebar.columnconfigure(0, weight=1)
         self.sidebar.rowconfigure(4, weight=1)
 
@@ -95,6 +145,11 @@ class GameWindow(ttk.Frame):
         self._build_action_panel()
         self._build_players_panel()
         self._build_log_panel()
+        self.turn_transition = TurnTransitionOverlay(
+            self,
+            self._continue_turn_transition,
+        )
+        self._bind_keyboard_shortcuts()
         if self.loaded:
             self._restore_log_from_history()
             self._log("Partie chargée.")
@@ -106,104 +161,120 @@ class GameWindow(ttk.Frame):
             self._check_game_over()
 
     def _build_header(self) -> None:
-        """Crée le bandeau supérieur du joueur courant et le bouton Nouvelle partie.
+        """Crée un bandeau de tour compact adapté au HUD V22.2.
 
         Entrées:
             Aucune.
 
         Sortie:
-            None: Le bandeau est ajouté à la barre latérale.
+            None: Tour, statut et navigation tiennent dans la colonne latérale étroite.
         """
         frame = ttk.Frame(self.sidebar)
         frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
 
-        self.turn_label = ttk.Label(frame, text="", font=("Arial", 17, "bold"))
-        self.turn_label.grid(row=0, column=0, sticky="w")
+        self.turn_label = ttk.Label(frame, text="", font=("Arial", 16, "bold"))
+        self.turn_label.grid(row=0, column=0, columnspan=2, sticky="w")
+        self.status_label = ttk.Label(frame, text="", style="Muted.TLabel")
+        self.status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 5))
+
         self.save_button = ttk.Button(
             frame,
-            text="Sauvegarder",
+            text="Sauver",
             command=self._save_game,
         )
-        self.save_button.grid(row=0, column=1, sticky="e", padx=(0, 6))
-
+        self.save_button.grid(row=2, column=0, sticky="ew", padx=(0, 3))
         ttk.Button(
             frame,
-            text="Nouvelle partie",
+            text="Menu",
             command=self._request_new_game,
-        ).grid(row=0, column=2, sticky="e")
-
-        self.status_label = ttk.Label(frame, text="")
-        self.status_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(3, 0))
+        ).grid(row=2, column=1, sticky="ew", padx=(3, 0))
 
     def _build_dice_panel(self) -> None:
-        """Crée les dés cliquables et les actions de prison contextuelles.
+        """Crée les dés V22.2 dans une pile compacte de type jeu numérique.
 
         Entrées:
             Aucune.
 
         Sortie:
-            None: Les dés deviennent le seul contrôle de lancer et la prison est intégrée dessous.
+            None: Les dés restent grands sans imposer une barre latérale trop large.
         """
         self.dice_frame = ttk.LabelFrame(
             self.sidebar,
             text="Dés — cliquez pour lancer",
-            padding=10,
+            padding=8,
             style="Card.TLabelframe",
         )
-        self.dice_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        self.dice_frame.grid(row=1, column=0, sticky="ew", pady=(0, 9))
         self.dice_frame.columnconfigure(0, weight=1)
         self.dice_frame.columnconfigure(1, weight=1)
-        self.dice_frame.columnconfigure(2, weight=2)
 
-        self.die_one = DiceFace(self.dice_frame, size=82, command=self._roll_from_dice)
-        self.die_one.grid(row=0, column=0, padx=(4, 6), pady=4)
-        self.die_two = DiceFace(self.dice_frame, size=82, command=self._roll_from_dice)
-        self.die_two.grid(row=0, column=1, padx=6, pady=4)
+        self.die_one = DiceFace(self.dice_frame, size=58, command=self._roll_from_dice)
+        self.die_one.grid(row=0, column=0, padx=(10, 4), pady=3)
+        self.die_two = DiceFace(self.dice_frame, size=58, command=self._roll_from_dice)
+        self.die_two.grid(row=0, column=1, padx=(4, 10), pady=3)
 
         info = ttk.Frame(self.dice_frame)
-        info.grid(row=0, column=2, sticky="nsew", padx=(10, 4))
+        info.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.dice_note = ttk.Label(
             info,
             text="Aucun lancer",
             style="DiceNote.TLabel",
             justify="center",
+            anchor="center",
         )
-        self.dice_note.pack(fill="x", expand=True)
+        self.dice_note.pack(fill="x")
         self.dice_hint = ttk.Label(
             info,
             text="Cliquez sur un dé pour lancer.",
             style="Muted.TLabel",
             justify="center",
+            anchor="center",
+            wraplength=255,
         )
-        self.dice_hint.pack(fill="x", pady=(4, 0))
+        self.dice_hint.pack(fill="x", pady=(2, 0))
 
         self.jail_controls = ttk.Frame(self.dice_frame)
-        self.jail_controls.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.jail_controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.jail_controls.columnconfigure(0, weight=1)
         self.jail_controls.columnconfigure(1, weight=1)
-
         self.jail_label = ttk.Label(
             self.jail_controls,
             text="En prison : cliquez sur les dés pour tenter un double.",
             justify="center",
+            wraplength=250,
         )
         self.jail_label.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 5))
-
         self.jail_pay_button = ttk.Button(
             self.jail_controls,
             text="Payer 50 $",
             command=lambda: self._play_turn("pay"),
         )
-        self.jail_pay_button.grid(row=1, column=0, sticky="ew", padx=(0, 4))
-
+        self.jail_pay_button.grid(row=1, column=0, sticky="ew", padx=(0, 3))
         self.jail_card_button = ttk.Button(
             self.jail_controls,
-            text="Utiliser carte sortie de prison",
+            text="Utiliser carte",
             command=lambda: self._play_turn("card"),
         )
-        self.jail_card_button.grid(row=1, column=1, sticky="ew", padx=(4, 0))
+        self.jail_card_button.grid(row=1, column=1, sticky="ew", padx=(3, 0))
         self.jail_controls.grid_remove()
+
+        self.action_indicator = ttk.Label(
+            self.dice_frame,
+            text="",
+            style="ActionHint.TLabel",
+            anchor="center",
+            justify="center",
+            wraplength=260,
+        )
+        self.action_indicator.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(6, 0),
+        )
 
     def _build_action_panel(self) -> None:
         """Crée les actions générales de patrimoine et d'échange entre joueurs.
@@ -221,7 +292,7 @@ class GameWindow(ttk.Frame):
 
         self.manage_button = ttk.Button(
             frame,
-            text="Gérer mes propriétés",
+            text="Gérer",
             command=self._manage_properties,
         )
         self.manage_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
@@ -277,28 +348,28 @@ class GameWindow(ttk.Frame):
         )
         self.history_button = ttk.Button(
             frame,
-            text="Historique / Stats",
+            text="Replay",
             command=self._show_history,
         )
         self.history_button.grid(
             row=2,
             column=0,
-            columnspan=2,
             sticky="ew",
-            pady=(7, 0),
+            padx=(0, 3),
+            pady=(5, 0),
         )
 
         self.rules_button = ttk.Button(
             frame,
-            text="Règles de la partie",
+            text="Règles",
             command=self._show_rules,
         )
         self.rules_button.grid(
-            row=4,
-            column=0,
-            columnspan=2,
+            row=2,
+            column=1,
             sticky="ew",
-            pady=(7, 0),
+            padx=(3, 0),
+            pady=(5, 0),
         )
 
         self.bank_stock_label.grid(
@@ -306,42 +377,126 @@ class GameWindow(ttk.Frame):
             column=0,
             columnspan=2,
             sticky="ew",
+            pady=(5, 0),
+        )
+
+        self.privacy_button = ttk.Button(
+            frame,
+            text="Écran privé : ON",
+            style="Action.TButton",
+            command=self._toggle_private_turn_screen,
+        )
+        self.privacy_button.grid(
+            row=4,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(5, 0),
+        )
+
+        ttk.Label(
+            frame,
+            text="Espace lancer • G gérer • E échanger • H replay • R règles • Ctrl+S",
+            style="Muted.TLabel",
+            wraplength=300,
+            justify="center",
+        ).grid(
+            row=5,
+            column=0,
+            columnspan=2,
+            sticky="ew",
             pady=(7, 0),
         )
 
     def _build_players_panel(self) -> None:
-        """Crée le tableau récapitulatif de l'état de tous les joueurs.
+        """Place les cartes joueur autour de la scène isométrique.
 
         Entrées:
             Aucune.
 
         Sortie:
-            None: Un tableau de joueurs est ajouté à la barre latérale.
+            None: Les joueurs occupent les coins/bords, le plateau restant dégagé.
         """
-        frame = ttk.LabelFrame(self.sidebar, text="Joueurs", padding=6)
-        frame.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        columns = ("cash", "position", "properties", "cards", "status")
+        self.net_worth_button = ttk.Button(
+            self.board_stage,
+            text=(
+                "Patrimoine : ON"
+                if self.visual_preferences.show_net_worth
+                else "Patrimoine : OFF"
+            ),
+            command=self._toggle_net_worth,
+        )
+        self.net_worth_button.place(relx=0.5, rely=0.015, anchor="n")
+
+        self.player_cards: dict[int, PlayerStatusCard] = {}
+        pawns = self.visual_preferences.pawn_ids
+        positions = (
+            (0.012, 0.02, "nw", 0.21),
+            (0.988, 0.02, "ne", 0.21),
+            (0.012, 0.98, "sw", 0.21),
+            (0.988, 0.98, "se", 0.21),
+            (0.012, 0.50, "w", 0.18),
+            (0.988, 0.50, "e", 0.18),
+        )
+        for index, player in enumerate(self.game.players):
+            pawn_id = pawns[index % len(pawns)] if pawns else "car"
+            card = PlayerStatusCard(
+                self.board_stage,
+                self.game,
+                player,
+                pawn_id,
+                PLAYER_COLORS[index % len(PLAYER_COLORS)],
+                show_net_worth=self.visual_preferences.show_net_worth,
+            )
+            relx, rely, anchor, relwidth = positions[index % len(positions)]
+            card.place(
+                relx=relx,
+                rely=rely,
+                anchor=anchor,
+                relwidth=relwidth,
+            )
+            card.lift()
+            self.player_cards[player.player_id] = card
+        self.net_worth_button.lift()
+
+        # Widget conservé pour compatibilité avec d'anciens tests/extensions.
         self.players_tree = ttk.Treeview(
-            frame,
-            columns=columns,
+            self.player_rail,
+            columns=("cash",),
             show="tree headings",
-            height=min(6, len(self.game.players)),
+            height=1,
         )
         self.players_tree.heading("#0", text="Joueur")
         self.players_tree.heading("cash", text="$")
-        self.players_tree.heading("position", text="Case")
-        self.players_tree.heading("properties", text="Biens")
-        self.players_tree.heading("cards", text="Cartes")
-        self.players_tree.heading("status", text="État")
-        self.players_tree.column("#0", width=120)
-        self.players_tree.column("cash", width=75, anchor="center")
-        self.players_tree.column("position", width=55, anchor="center")
-        self.players_tree.column("properties", width=55, anchor="center")
-        self.players_tree.column("cards", width=55, anchor="center")
-        self.players_tree.column("status", width=90, anchor="center")
-        self.players_tree.pack(fill="x")
-        self.players_tree.tag_configure("current", background="#E9F2FF")
-        self.players_tree.tag_configure("bankrupt", foreground="#8A8A8A")
+
+    def _toggle_net_worth(self) -> None:
+        """Affiche ou masque le patrimoine estimé dans toutes les cartes joueur.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: La préférence locale et les cartes sont actualisées.
+        """
+        self.visual_preferences = VisualPreferences(
+            style_key=self.visual_preferences.style_key,
+            theme=self.visual_preferences.theme,
+            animation_speed=self.visual_preferences.animation_speed,
+            show_net_worth=not self.visual_preferences.show_net_worth,
+            pawn_ids=self.visual_preferences.pawn_ids,
+            sound_enabled=self.visual_preferences.sound_enabled,
+        )
+        self.board_view.visual_preferences = self.visual_preferences
+        self.net_worth_button.configure(
+            text=(
+                "Patrimoine : ON"
+                if self.visual_preferences.show_net_worth
+                else "Patrimoine : OFF"
+            )
+        )
+        for card in self.player_cards.values():
+            card.show_net_worth = self.visual_preferences.show_net_worth
+        self._refresh_players()
 
     def _build_log_panel(self) -> None:
         """Crée le journal textuel retraçant les événements de la partie.
@@ -360,8 +515,8 @@ class GameWindow(ttk.Frame):
             frame,
             wrap="word",
             state="disabled",
-            width=48,
-            height=18,
+            width=28,
+            height=12,
             background="#F7F9FA",
             foreground="#27313A",
             relief="flat",
@@ -370,6 +525,444 @@ class GameWindow(ttk.Frame):
         self.log_text.configure(yscrollcommand=scrollbar.set)
         self.log_text.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
+
+    @staticmethod
+    def _cash_notice_message(changes: list[tuple[str, int]]) -> str:
+        """Formate les variations de liquidités pour une notification compacte.
+
+        Entrées:
+            changes (list[tuple[str, int]]): Couples nom du joueur / variation de cash.
+
+        Sortie:
+            str: Message lisible, vide lorsqu'aucun changement n'existe.
+        """
+        parts = []
+        for name, delta in changes[:4]:
+            sign = "+" if delta > 0 else ""
+            parts.append(f"{name} {sign}{delta} $")
+        if len(changes) > 4:
+            parts.append(f"+{len(changes) - 4} autre(s)")
+        return "  •  ".join(parts)
+
+    @staticmethod
+    def _focus_is_text_input(widget: tk.Misc | None) -> bool:
+        """Détecte si un raccourci clavier risquerait d'écrire dans un champ texte.
+
+        Entrées:
+            widget (tk.Misc | None): Widget ayant actuellement le focus.
+
+        Sortie:
+            bool: ``True`` pour les champs de saisie, textes et combobox.
+        """
+        if widget is None:
+            return False
+        try:
+            widget_class = widget.winfo_class()
+        except tk.TclError:
+            return False
+        return widget_class in {
+            "Entry",
+            "TEntry",
+            "Text",
+            "TCombobox",
+            "Spinbox",
+            "TSpinbox",
+        }
+
+    def _bind_keyboard_shortcuts(self) -> None:
+        """Installe les raccourcis de jeu sur la fenêtre principale.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Les identifiants de liaison sont mémorisés pour être retirés proprement.
+        """
+        top = self.winfo_toplevel()
+        bindings = {
+            "<space>": self._shortcut_roll_or_continue,
+            "<Return>": self._shortcut_continue_transition,
+            "<Control-s>": self._shortcut_save,
+            "<Control-S>": self._shortcut_save,
+            "<Key-g>": self._shortcut_manage,
+            "<Key-G>": self._shortcut_manage,
+            "<Key-e>": self._shortcut_trade,
+            "<Key-E>": self._shortcut_trade,
+            "<Key-h>": self._shortcut_history,
+            "<Key-H>": self._shortcut_history,
+            "<Key-r>": self._shortcut_rules,
+            "<Key-R>": self._shortcut_rules,
+        }
+        for sequence, callback in bindings.items():
+            binding_id = top.bind(sequence, callback, add="+")
+            if binding_id:
+                self._keyboard_bindings.append((sequence, binding_id))
+
+    def _unbind_keyboard_shortcuts(self) -> None:
+        """Retire uniquement les raccourcis installés par cette fenêtre de jeu.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Les autres bindings de l'application sont préservés.
+        """
+        try:
+            top = self.winfo_toplevel()
+        except tk.TclError:
+            self._keyboard_bindings.clear()
+            return
+        for sequence, binding_id in self._keyboard_bindings:
+            try:
+                top.unbind(sequence, binding_id)
+            except tk.TclError:
+                pass
+        self._keyboard_bindings.clear()
+
+    def destroy(self) -> None:
+        """Détruit la fenêtre de jeu après nettoyage de ses raccourcis.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Les bindings puis les widgets Tkinter sont libérés.
+        """
+        self._unbind_keyboard_shortcuts()
+        super().destroy()
+
+    def _shortcut_roll_or_continue(self, event: tk.Event) -> str | None:
+        """Associe Espace à la transition privée ou au lancer de dés.
+
+        Entrées:
+            event (tk.Event): Événement clavier Tkinter.
+
+        Sortie:
+            str | None: ``"break"`` lorsqu'une action a été consommée.
+        """
+        if self.turn_transition_in_progress:
+            self._continue_turn_transition()
+            return "break"
+        focus = self.focus_get()
+        if self._focus_is_text_input(focus):
+            return None
+        if focus is not None:
+            try:
+                if focus.winfo_class() in {"TButton", "Button"}:
+                    return None
+            except tk.TclError:
+                pass
+        if self.die_one.enabled:
+            self._roll_from_dice()
+            return "break"
+        return None
+
+    def _shortcut_continue_transition(self, event: tk.Event) -> str | None:
+        """Utilise Entrée uniquement pour confirmer le passage d'écran.
+
+        Entrées:
+            event (tk.Event): Événement clavier.
+
+        Sortie:
+            str | None: ``"break"`` si le rideau était visible.
+        """
+        if self.turn_transition_in_progress:
+            self._continue_turn_transition()
+            return "break"
+        return None
+
+    def _shortcut_save(self, event: tk.Event) -> str | None:
+        """Déclenche Ctrl+S lorsque la partie est dans un état sauvegardable.
+
+        Entrées:
+            event (tk.Event): Événement clavier.
+
+        Sortie:
+            str | None: ``"break"`` si la sauvegarde a été demandée.
+        """
+        if self._can_save_now():
+            self._save_game()
+            return "break"
+        return None
+
+    def _shortcut_manage(self, event: tk.Event) -> str | None:
+        """Ouvre la gestion des propriétés avec la touche G.
+
+        Entrées:
+            event (tk.Event): Événement clavier.
+
+        Sortie:
+            str | None: ``"break"`` lorsque le raccourci est accepté.
+        """
+        if self._focus_is_text_input(self.focus_get()) or self.turn_transition_in_progress:
+            return None
+        if self.manage_button.instate(["!disabled"]):
+            self._manage_properties()
+            return "break"
+        return None
+
+    def _shortcut_trade(self, event: tk.Event) -> str | None:
+        """Ouvre un échange avec la touche E.
+
+        Entrées:
+            event (tk.Event): Événement clavier.
+
+        Sortie:
+            str | None: ``"break"`` lorsque le raccourci est accepté.
+        """
+        if self._focus_is_text_input(self.focus_get()) or self.turn_transition_in_progress:
+            return None
+        if self.trade_button.instate(["!disabled"]):
+            self._start_trade()
+            return "break"
+        return None
+
+    def _shortcut_history(self, event: tk.Event) -> str | None:
+        """Ouvre Replay / Stats avec la touche H.
+
+        Entrées:
+            event (tk.Event): Événement clavier.
+
+        Sortie:
+            str | None: ``"break"`` lorsque le panneau est ouvert.
+        """
+        if self._focus_is_text_input(self.focus_get()) or self.turn_transition_in_progress:
+            return None
+        if self.history_button.instate(["!disabled"]):
+            self._show_history()
+            return "break"
+        return None
+
+    def _shortcut_rules(self, event: tk.Event) -> str | None:
+        """Ouvre le résumé des règles avec la touche R.
+
+        Entrées:
+            event (tk.Event): Événement clavier.
+
+        Sortie:
+            str | None: ``"break"`` lorsque le panneau est ouvert.
+        """
+        if self._focus_is_text_input(self.focus_get()) or self.turn_transition_in_progress:
+            return None
+        if self.rules_button.instate(["!disabled"]):
+            self._show_rules()
+            return "break"
+        return None
+
+    def _toggle_private_turn_screen(self) -> None:
+        """Active ou désactive le rideau de confidentialité entre joueurs.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le bouton et l'état de révélation du joueur sont actualisés.
+        """
+        self.private_turn_screen_enabled = not self.private_turn_screen_enabled
+        self.privacy_button.configure(
+            text=(
+                "Écran privé : ON"
+                if self.private_turn_screen_enabled
+                else "Écran privé : OFF"
+            ),
+            style=(
+                "Action.TButton"
+                if self.private_turn_screen_enabled
+                else "TButton"
+            ),
+        )
+        if not self.private_turn_screen_enabled:
+            self.turn_transition_in_progress = False
+            self._transition_target_player_id = None
+            self._revealed_player_id = self.game.current_player.player_id
+            self.turn_transition.hide()
+            self.refresh()
+
+    def _stable_for_turn_transition(self) -> bool:
+        """Indique si aucune décision du joueur précédent ne reste à terminer.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            bool: ``True`` lorsque le passage de main peut masquer la partie sans
+            interrompre une enchère, un achat, un loyer ou un panneau métier.
+        """
+        return not any(
+            (
+                self.pending_purchase is not None,
+                self.pending_landing_build is not None,
+                self.auction_in_progress,
+                self.building_auction_in_progress,
+                self.trade_in_progress,
+                self.property_management_in_progress,
+                self.history_in_progress,
+                self.rules_in_progress,
+                self.inspection_in_progress,
+                getattr(self, "card_reveal_in_progress", False),
+                self.game.is_over,
+            )
+        )
+
+    def _turn_transition_target(self) -> Player:
+        """Détermine quel joueur doit voir la prochaine décision privée.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            Player: Propriétaire d'un loyer manuel en attente, sinon joueur courant.
+        """
+        claim = self.game.pending_rent_claim
+        if claim is not None:
+            return claim.recipient
+        return self.game.current_player
+
+    def _sync_turn_transition(self) -> None:
+        """Affiche le rideau lorsque la main passe réellement à un autre joueur.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le prochain joueur doit confirmer avant de voir la partie.
+        """
+        if not self.private_turn_screen_enabled or not self._stable_for_turn_transition():
+            return
+        target = self._turn_transition_target()
+        if target.player_id == self._revealed_player_id:
+            return
+        self.turn_transition_in_progress = True
+        self._transition_target_player_id = target.player_id
+        color = PLAYER_COLORS[target.player_id % len(PLAYER_COLORS)]
+        self.turn_transition.show(
+            target.name,
+            self.game.upcoming_turn_number,
+            color,
+        )
+        self.die_one.set_enabled(False)
+        self.die_two.set_enabled(False)
+        for button in (
+            self.manage_button,
+            self.trade_button,
+            self.history_button,
+            self.rules_button,
+            self.save_button,
+        ):
+            self._set_button_state(button, False)
+        self.action_indicator.configure(
+            text=f"Passez l'écran à {target.name} • Entrée ou Espace pour continuer"
+        )
+
+    def _continue_turn_transition(self) -> None:
+        """Révèle la partie au joueur indiqué par le rideau privé.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le joueur courant devient le dernier joueur explicitement révélé.
+        """
+        if not self.turn_transition_in_progress:
+            return
+        if self._transition_target_player_id is not None:
+            self._revealed_player_id = self._transition_target_player_id
+        else:
+            self._revealed_player_id = self.game.current_player.player_id
+        self._transition_target_player_id = None
+        self.turn_transition_in_progress = False
+        self.turn_transition.hide()
+        self.refresh()
+
+    def _sync_light_animations(self) -> None:
+        """Déclenche variations de cash et déplacement fluide case par case.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Les animations restent purement visuelles et le moteur est inchangé.
+        """
+        cash_changes: list[tuple[str, int]] = []
+        moved: list[tuple[int, int, int]] = []
+        for player in self.game.players:
+            old_cash = self._last_cash_snapshot.get(player.player_id, player.cash)
+            delta = player.cash - old_cash
+            if delta:
+                cash_changes.append((player.name, delta))
+                self.audio.play("cash_gain" if delta > 0 else "cash_loss")
+            self._last_cash_snapshot[player.player_id] = player.cash
+            old_position = self._last_position_snapshot.get(player.player_id, player.position)
+            if player.position != old_position and not player.bankrupt:
+                moved.append((player.player_id, old_position, player.position))
+            self._last_position_snapshot[player.player_id] = player.position
+        message = self._cash_notice_message(cash_changes)
+        if message:
+            self.board_view.show_notice(message)
+        if moved:
+            player_id, old_position, new_position = moved[-1]
+            self.audio.play("pawn_move")
+            self.board_view.animate_player_move(player_id, old_position, new_position)
+
+    def _refresh_action_indicator(
+        self,
+        dice_enabled: bool,
+        waiting: bool,
+        building_waiting: bool,
+        rent_waiting: bool,
+        auctioning: bool,
+        building_auctioning: bool,
+        trading: bool,
+        managing: bool,
+        viewing_history: bool,
+        viewing_rules: bool,
+        inspecting: bool,
+    ) -> None:
+        """Affiche en permanence l'action principale attendue de l'utilisateur.
+
+        Entrées:
+            dice_enabled (bool): Indique si un lancer est possible.
+            waiting (bool): Décision d'achat en attente.
+            building_waiting (bool): Construction après atterrissage en attente.
+            rent_waiting (bool): Loyer manuel en attente.
+            auctioning (bool): Enchère immobilière active.
+            building_auctioning (bool): Enchère de bâtiment active.
+            trading (bool): Panneau d'échange ouvert.
+            managing (bool): Gestion du patrimoine ouverte.
+            viewing_history (bool): Replay / stats ouvert.
+            viewing_rules (bool): Résumé des règles ouvert.
+            inspecting (bool): Fiche de propriété ouverte.
+
+        Sortie:
+            None: Le bandeau d'action est actualisé.
+        """
+        if self.card_reveal_in_progress:
+            text = "ACTION : lire la carte puis Continuer"
+        elif rent_waiting:
+            text = "ACTION : réclamer le loyer ou y renoncer"
+        elif waiting:
+            text = "ACTION : acheter la propriété ou passer / enchérir"
+        elif building_waiting:
+            text = "ACTION : choisir les bâtiments ou passer"
+        elif auctioning:
+            text = "ACTION : terminer l'enchère"
+        elif building_auctioning:
+            text = "ACTION : terminer l'enchère de bâtiment"
+        elif trading:
+            text = "ACTION : terminer ou annuler l'échange"
+        elif managing:
+            text = "ACTION : fermer la gestion pour reprendre"
+        elif viewing_history:
+            text = "ACTION : fermer Replay / Stats pour reprendre"
+        elif viewing_rules:
+            text = "ACTION : fermer les règles pour reprendre"
+        elif inspecting:
+            text = "ACTION : fermer la fiche pour reprendre"
+        elif dice_enabled:
+            text = "ACTION : lancer les dés • Espace"
+        else:
+            text = ""
+        self.action_indicator.configure(text=text)
 
     def _can_save_now(self) -> bool:
         """Indique si la partie se trouve dans un état stable pouvant être sauvegardé.
@@ -392,6 +985,9 @@ class GameWindow(ttk.Frame):
                 self.history_in_progress,
                 self.rules_in_progress,
                 self.inspection_in_progress,
+                getattr(self, "card_reveal_in_progress", False),
+                self.turn_transition_in_progress,
+                self.turn_animation_in_progress,
             )
         )
 
@@ -407,7 +1003,13 @@ class GameWindow(ttk.Frame):
         if not self._can_save_now() or not callable(self.save_game_callback):
             return
 
-        path = self.save_game_callback(self.game)
+        import inspect
+
+        parameters = inspect.signature(self.save_game_callback).parameters
+        if len(parameters) >= 2:
+            path = self.save_game_callback(self.game, self.visual_preferences)
+        else:
+            path = self.save_game_callback(self.game)
         if path:
             self._log(f"Partie sauvegardée : {path}")
 
@@ -425,8 +1027,19 @@ class GameWindow(ttk.Frame):
             "Abandonner la partie actuelle et revenir au menu d’accueil ?",
             parent=self,
         )
-        if confirmed and callable(self.new_game_callback):
-            self.new_game_callback()
+        if confirmed:
+            self.abandon_summary_shown = True
+            self.game.record_event(
+                "game_abandoned",
+                "La partie est interrompue volontairement depuis l'interface.",
+                self.game.current_player,
+            )
+            self.board_view.show_end_game(
+                self._show_end_history,
+                self._return_home_after_game,
+                abandoned=True,
+            )
+            self.refresh()
 
     def _roll_from_dice(self) -> None:
         """Lance le tour lorsque le joueur clique sur l'un des deux dés.
@@ -440,16 +1053,17 @@ class GameWindow(ttk.Frame):
         self._play_turn("roll")
 
     def _play_turn(self, jail_action: str) -> None:
-        """Exécute un tour puis synchronise dés, cartes, achat et journal.
+        """Exécute le moteur puis présente le tour dans l'ordre dés → pion → action.
 
         Entrées:
             jail_action (str): Action de prison transmise à ``Game.take_turn``.
 
         Sortie:
-            None: Le moteur et tous les éléments visuels sont actualisés.
+            None: Les effets visuels sont séquencés sans modifier les règles moteur.
         """
         if (
-            self.pending_purchase is not None
+            self.turn_animation_in_progress
+            or self.pending_purchase is not None
             or self.pending_landing_build is not None
             or self.game.pending_rent_claim is not None
             or self.auction_in_progress
@@ -459,8 +1073,12 @@ class GameWindow(ttk.Frame):
             or self.history_in_progress
             or self.rules_in_progress
             or self.inspection_in_progress
+            or self.card_reveal_in_progress
+            or self.turn_transition_in_progress
         ):
             return
+
+        visual_start_position = self.game.current_player.position
 
         try:
             result = self.game.take_turn(jail_action=jail_action)
@@ -474,33 +1092,10 @@ class GameWindow(ttk.Frame):
             return
 
         self.last_result_player = result.player
-        self.die_one.set_value(result.dice[0])
-        self.die_two.set_value(result.dice[1])
-
-        notes = []
-        if result.rolled_double:
-            notes.append("DOUBLE")
-        if result.passed_go:
-            notes.append(f"+{self.game.rules.go_salary} Départ")
-        total = sum(result.dice)
-        headline = f"Total : {total}" if total else "Pas de déplacement"
-        self.dice_note.config(text="\n".join([headline, *notes]))
-
-        self._log(
-            f"Tour {result.turn_number} — {result.player.name} : "
-            f"{result.dice[0]} + {result.dice[1]}."
+        self.board_view.lock_player_visual_position(
+            result.player.player_id,
+            visual_start_position,
         )
-        if result.message:
-            self._log(result.message)
-
-        for financial_event in self.game.financial_events_this_turn:
-            self._log(financial_event)
-
-        if result.player.bankrupt:
-            self._log(f"{result.player.name} est en faillite.")
-
-        for event in self.game.drawn_cards_this_turn:
-            self.board_view.display_drawn_card(event)
 
         space = self.game.board.get_player_space(result.player)
         if (
@@ -510,6 +1105,114 @@ class GameWindow(ttk.Frame):
             and space.owner is None
         ):
             self.pending_purchase = (result.player, space)
+        elif (
+            not self.game.is_over
+            and not result.player.bankrupt
+            and isinstance(space, Property)
+            and space.owner is result.player
+        ):
+            self._prepare_landing_build(result.player, space)
+
+        self._pending_visual_turn = {
+            "result": result,
+            "start_position": visual_start_position,
+            "drawn_cards": list(self.game.drawn_cards_this_turn),
+            "financial_events": list(self.game.financial_events_this_turn),
+        }
+        self.turn_animation_in_progress = True
+        self._turn_animation_phase = "dice"
+        self._dice_animations_remaining = 2
+        self.die_one.set_enabled(False)
+        self.die_two.set_enabled(False)
+        self._set_button_state(self.manage_button, False)
+        self._set_button_state(self.trade_button, False)
+        self._set_button_state(self.save_button, False)
+        self.action_indicator.configure(text="DÉS EN COURS…")
+        self.dice_hint.config(text="Les dés tournent…")
+        self.dice_note.config(text="Lancement…")
+
+        self.audio.play("dice_roll")
+        self.die_one.animate_roll(
+            result.dice[0],
+            self.visual_preferences.animation_speed,
+            on_complete=self._on_die_animation_complete,
+        )
+        self.die_two.animate_roll(
+            result.dice[1],
+            self.visual_preferences.animation_speed,
+            on_complete=self._on_die_animation_complete,
+        )
+
+    def _on_die_animation_complete(self) -> None:
+        """Attend l'arrêt des deux dés avant de démarrer le déplacement du pion.
+
+        Entrées:
+            Aucune. Chaque dé appelle cette méthode une fois en fin d'animation.
+
+        Sortie:
+            None: Le pion ne commence à bouger qu'après le second dé arrêté.
+        """
+        if not self.turn_animation_in_progress or self._pending_visual_turn is None:
+            return
+        self._dice_animations_remaining = max(0, self._dice_animations_remaining - 1)
+        if self._dice_animations_remaining:
+            return
+
+        result = self._pending_visual_turn["result"]
+        start_position = int(self._pending_visual_turn["start_position"])
+        total = sum(result.dice)
+        notes: list[str] = []
+        if result.rolled_double:
+            notes.append("DOUBLE")
+        if result.passed_go:
+            notes.append(f"+{self.game.rules.go_salary} Départ")
+        headline = f"Total : {total}" if total else "Pas de déplacement"
+        self.dice_note.config(text="\n".join([headline, *notes]))
+
+        self._turn_animation_phase = "move"
+        self.action_indicator.configure(text="DÉPLACEMENT EN COURS…")
+        self.dice_hint.config(text=f"{result.player.name} avance sur le plateau…")
+        if start_position != result.player.position:
+            self.audio.play("pawn_move")
+        self.board_view.animate_player_move(
+            result.player.player_id,
+            start_position,
+            result.player.position,
+            on_complete=self._after_turn_move_animation,
+        )
+
+    def _after_turn_move_animation(self) -> None:
+        """Révèle les conséquences du tour seulement après l'arrivée du pion.
+
+        Entrées:
+            Aucune. Les données du tour sont conservées dans ``_pending_visual_turn``.
+
+        Sortie:
+            None: Journal, argent, cartes et panneaux d'action deviennent alors visibles.
+        """
+        payload = self._pending_visual_turn
+        if payload is None:
+            self.turn_animation_in_progress = False
+            self._turn_animation_phase = ""
+            return
+
+        result = payload["result"]
+        drawn_cards = list(payload["drawn_cards"])
+        financial_events = list(payload["financial_events"])
+
+        self._log(
+            f"Tour {result.turn_number} — {result.player.name} : "
+            f"{result.dice[0]} + {result.dice[1]}."
+        )
+        if result.message:
+            self._log(result.message)
+        for financial_event in financial_events:
+            self._log(str(financial_event))
+        if result.player.bankrupt:
+            self._log(f"{result.player.name} est en faillite.")
+
+        if self.pending_purchase is not None:
+            _buyer, space = self.pending_purchase
             if self.game.options.auctions_enabled:
                 self._log(
                     f"Décision requise : acheter {space.name} pour {space.price} $ "
@@ -520,24 +1223,66 @@ class GameWindow(ttk.Frame):
                     f"Décision requise : acheter {space.name} pour {space.price} $ "
                     "ou passer."
                 )
-        elif (
-            not self.game.is_over
-            and not result.player.bankrupt
-            and isinstance(space, Property)
-            and space.owner is result.player
-        ):
-            self._prepare_landing_build(result.player, space)
 
-        self.refresh()
+        self._last_position_snapshot[result.player.player_id] = result.player.position
+        self.turn_animation_in_progress = False
+        self._turn_animation_phase = ""
+        self._pending_visual_turn = None
 
-        if self._start_next_bankruptcy_auction():
+        if drawn_cards:
+            self._start_card_reveals(drawn_cards)
             return
 
+        self.refresh()
+        self._continue_after_card_reveals()
+
+
+    def _start_card_reveals(self, events: list[object]) -> None:
+        """Démarre la séquence de grandes cartes V22 après un tour.
+
+        Entrées:
+            events (list[object]): Événements ``DrawnCardEvent`` dans l'ordre de résolution.
+
+        Sortie:
+            None: La première carte masque le plateau jusqu'à validation.
+        """
+        self._card_reveal_queue = list(events)
+        self.card_reveal_in_progress = bool(self._card_reveal_queue)
+        self.refresh()
+        self._show_next_card_reveal()
+
+    def _show_next_card_reveal(self) -> None:
+        """Affiche la prochaine carte de la file ou reprend les décisions du tour.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Une carte est affichée ou la séquence est terminée.
+        """
+        if not self._card_reveal_queue:
+            self.card_reveal_in_progress = False
+            self.refresh()
+            self._continue_after_card_reveals()
+            return
+        event = self._card_reveal_queue.pop(0)
+        self.audio.play("card_draw")
+        self.board_view.show_card_reveal(event, on_close=self._show_next_card_reveal)
+
+    def _continue_after_card_reveals(self) -> None:
+        """Reprend les enchères/achats/constructions après les cartes animées.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Les décisions post-déplacement habituelles sont réactivées.
+        """
+        if self._start_next_bankruptcy_auction():
+            return
         self._show_purchase_card_if_needed()
         self._show_landing_build_if_needed()
         self._check_game_over()
-
-
 
     def _prepare_landing_build(
         self,
@@ -634,6 +1379,7 @@ class GameWindow(ttk.Frame):
             return
 
         label = "maison" if count == 1 else "maisons"
+        self.audio.play("house_build")
         self._log(
             f"{player.name} achète {count} {label} sur {property_.name}."
         )
@@ -662,6 +1408,7 @@ class GameWindow(ttk.Frame):
             self._show_landing_build_if_needed()
             return
 
+        self.audio.play("hotel_build")
         self._log(f"{player.name} achète un hôtel sur {property_.name}.")
         self._finish_landing_build()
 
@@ -765,6 +1512,7 @@ class GameWindow(ttk.Frame):
             )
             self.refresh()
             return
+        self.audio.play("property_buy")
         self._log(f"{player.name} achète {space.name} pour {space.price} $.")
         self.pending_purchase = None
         self.board_view.hide_purchase_card()
@@ -793,6 +1541,7 @@ class GameWindow(ttk.Frame):
             return
 
         auction = self.game.start_auction(space)
+        self.audio.play("auction")
         self.auction_in_progress = True
         self.auction_source = "purchase"
         self._log(f"Enchère ouverte pour {space.name}.")
@@ -869,6 +1618,7 @@ class GameWindow(ttk.Frame):
             return False
 
         auction = self.game.start_auction(space)
+        self.audio.play("auction")
         self.auction_in_progress = True
         self.auction_source = "bankruptcy"
         self._log(
@@ -1305,6 +2055,7 @@ class GameWindow(ttk.Frame):
         self.board_view.show_end_game(
             self._show_end_history,
             self._return_home_after_game,
+            abandoned=self.abandon_summary_shown,
         )
         self.refresh()
 
@@ -1335,44 +2086,28 @@ class GameWindow(ttk.Frame):
         self.log_text.config(state="disabled")
 
     def _refresh_players(self) -> None:
-        """Synchronise le tableau des joueurs avec l'état du moteur.
+        """Synchronise les cartes joueur V22 et le tableau de compatibilité caché.
 
         Entrées:
             Aucune.
 
         Sortie:
-            None: Les lignes du tableau sont reconstruites.
+            None: Joueur actif, cash, patrimoine, biens et états sont actualisés.
         """
+        for player in self.game.players:
+            card = self.player_cards.get(player.player_id)
+            if card is not None:
+                card.refresh(active=(player is self.game.current_player))
+
         for item in self.players_tree.get_children():
             self.players_tree.delete(item)
-
         for player in self.game.players:
-            if player.bankrupt:
-                status = "Faillite"
-            elif player.in_jail:
-                status = f"Prison {player.jail_turns}/{self.game.rules.max_jail_turns}"
-            elif player is self.game.current_player:
-                status = "À jouer"
-            else:
-                status = "Actif"
-            tags: tuple[str, ...] = ()
-            if player.bankrupt:
-                tags = ("bankrupt",)
-            elif player is self.game.current_player:
-                tags = ("current",)
             self.players_tree.insert(
                 "",
                 "end",
                 iid=str(player.player_id),
-                text=f"● {player.name}",
-                values=(
-                    f"{player.cash} $",
-                    player.position,
-                    len(player.properties),
-                    len(player.held_cards),
-                    status,
-                ),
-                tags=tags,
+                text=player.name,
+                values=(player.cash,),
             )
 
     def _set_button_state(self, button: ttk.Button, enabled: bool) -> None:
@@ -1396,16 +2131,47 @@ class GameWindow(ttk.Frame):
         Sortie:
             None: Tous les widgets dynamiques sont synchronisés.
         """
+        if self.turn_animation_in_progress:
+            self.die_one.set_enabled(False)
+            self.die_two.set_enabled(False)
+            phase_text = (
+                "DÉS EN COURS…"
+                if self._turn_animation_phase == "dice"
+                else "DÉPLACEMENT EN COURS…"
+            )
+            self.action_indicator.configure(text=phase_text)
+            return
+
         self.board_view.redraw()
         self._refresh_players()
+        self._sync_light_animations()
 
         self.bank_stock_label.config(
             text=f"Banque : {self.game.bank.stock_text()}"
         )
 
+        if self.abandon_summary_shown:
+            self.turn_transition_in_progress = False
+            self.turn_transition.hide()
+            self.action_indicator.configure(text="PARTIE INTERROMPUE — bilan affiché")
+            self.die_one.set_enabled(False)
+            self.die_two.set_enabled(False)
+            self.jail_controls.grid_remove()
+            self._set_button_state(self.manage_button, False)
+            self._set_button_state(self.trade_button, False)
+            self._set_button_state(self.history_button, False)
+            self._set_button_state(self.rules_button, False)
+            self._set_button_state(self.save_button, False)
+            return
+
         if self.game.is_over:
+            self.turn_transition_in_progress = False
+            self.turn_transition.hide()
+            self.action_indicator.configure(text="PARTIE TERMINÉE")
             winner = self.game.winner
             text = f"Partie terminée — {winner.name} gagne !" if winner else "Partie terminée"
+            if not self.end_game_shown:
+                self.audio.play("victory")
             self.turn_label.config(text=text)
             self.status_label.config(text="")
             self.die_one.set_enabled(False)
@@ -1463,6 +2229,7 @@ class GameWindow(ttk.Frame):
             and not viewing_history
             and not viewing_rules
             and not inspecting
+            and not self.card_reveal_in_progress
         )
         self.die_one.set_enabled(dice_enabled)
         self.die_two.set_enabled(dice_enabled)
@@ -1471,7 +2238,10 @@ class GameWindow(ttk.Frame):
             text=f"Banque : {self.game.bank.stock_text()}"
         )
 
-        if rent_waiting:
+        if self.card_reveal_in_progress:
+            self.status_label.config(text="Carte tirée : validez-la pour continuer.")
+            self.dice_hint.config(text="La carte est affichée au centre du plateau.")
+        elif rent_waiting:
             claim = self.game.pending_rent_claim
             self.status_label.config(
                 text=(
@@ -1524,6 +2294,20 @@ class GameWindow(ttk.Frame):
         else:
             self.dice_hint.config(text="Cliquez sur un dé pour lancer.")
 
+        self._refresh_action_indicator(
+            dice_enabled=dice_enabled,
+            waiting=waiting,
+            building_waiting=building_waiting,
+            rent_waiting=rent_waiting,
+            auctioning=auctioning,
+            building_auctioning=building_auctioning,
+            trading=trading,
+            managing=managing,
+            viewing_history=viewing_history,
+            viewing_rules=viewing_rules,
+            inspecting=inspecting,
+        )
+
         if rent_waiting:
             claim = self.game.pending_rent_claim
             self.rent_claim_frame.grid()
@@ -1570,6 +2354,7 @@ class GameWindow(ttk.Frame):
                 and not viewing_history
                 and not viewing_rules
                 and not inspecting
+                and not self.card_reveal_in_progress
             ),
         )
         self._set_button_state(
@@ -1586,6 +2371,7 @@ class GameWindow(ttk.Frame):
                 and not viewing_history
                 and not viewing_rules
                 and not inspecting
+                and not self.card_reveal_in_progress
             ),
         )
         self._set_button_state(
@@ -1600,6 +2386,7 @@ class GameWindow(ttk.Frame):
                 and not viewing_history
                 and not viewing_rules
                 and not inspecting
+                and not self.card_reveal_in_progress
             ),
         )
         self._set_button_state(
@@ -1614,12 +2401,14 @@ class GameWindow(ttk.Frame):
                 and not viewing_history
                 and not viewing_rules
                 and not inspecting
+                and not self.card_reveal_in_progress
             ),
         )
         self._set_button_state(
             self.save_button,
             self._can_save_now(),
         )
+        self._sync_turn_transition()
 
     def _check_game_over(self) -> None:
         """Affiche une seule fois le bilan final intégré lorsqu'un vainqueur est déterminé.
@@ -1649,6 +2438,7 @@ class GameWindow(ttk.Frame):
             )
 
         self.end_game_shown = True
+        self.abandon_summary_shown = False
         self.board_view.show_end_game(
             self._show_end_history,
             self._return_home_after_game,

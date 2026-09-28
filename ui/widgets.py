@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable
@@ -187,6 +188,54 @@ class DiceFace(tk.Canvas):
                 fill=pip, outline="",
             )
 
+    def animate_roll(
+        self,
+        final_value: int,
+        speed: str = "normal",
+        on_complete: Callable[[], None] | None = None,
+    ) -> None:
+        """Anime rapidement plusieurs faces puis s'arrête sur la valeur réelle.
+
+        Entrées:
+            final_value (int): Résultat moteur final compris entre 1 et 6.
+            speed (str): ``normal``, ``fast`` ou ``off``.
+            on_complete (Callable[[], None] | None): Callback appelé après la dernière face.
+
+        Sortie:
+            None: Le dé change visuellement puis signale la fin de l'animation.
+        """
+        if final_value not in self.PIP_LAYOUTS:
+            raise ValueError("La valeur finale du dé doit être comprise entre 1 et 6.")
+        if speed == "off":
+            self.set_value(final_value)
+            if on_complete is not None:
+                self.after_idle(on_complete)
+            return
+        frames = 7 if speed == "normal" else 4
+        delay = 48 if speed == "normal" else 26
+        system_random = random.SystemRandom()
+
+        def step(index: int) -> None:
+            """Affiche une frame aléatoire puis planifie la suivante.
+
+            Entrées:
+                index (int): Numéro de frame déjà jouée.
+
+            Sortie:
+                None: La séquence se termine sur ``final_value``.
+            """
+            if not self.winfo_exists():
+                return
+            if index >= frames:
+                self.set_value(final_value)
+                if on_complete is not None:
+                    self.after_idle(on_complete)
+                return
+            self.set_value(system_random.randint(1, 6))
+            self.after(delay, lambda: step(index + 1))
+
+        step(0)
+
 
 class SectionTitle(ttk.Frame):
     """Affiche un petit titre de section avec un sous-titre facultatif.
@@ -215,3 +264,216 @@ class SectionTitle(ttk.Frame):
         ttk.Label(self, text=title, style="SectionTitle.TLabel").pack(anchor="w")
         if subtitle:
             ttk.Label(self, text=subtitle, style="Muted.TLabel").pack(anchor="w")
+
+class TreeviewMultiSorter:
+    """Ajoute un tri multi-colonnes cyclique à un ``ttk.Treeview``.
+
+    Entrées:
+        tree (ttk.Treeview): Tableau dont les en-têtes deviennent cliquables.
+        labels (dict[str, str]): Libellés de base des colonnes, ``#0`` compris si présent.
+
+    Sortie:
+        TreeviewMultiSorter: Contrôleur conservant l'ordre de clic et l'état des tris.
+    """
+
+    _RANK_SYMBOLS = ("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨")
+
+    def __init__(self, tree: ttk.Treeview, labels: dict[str, str]) -> None:
+        """Mémorise le tableau et installe les commandes de tri sur ses titres.
+
+        Entrées:
+            tree (ttk.Treeview): Tableau à rendre triable.
+            labels (dict[str, str]): Texte original de chaque en-tête.
+
+        Sortie:
+            None: Les colonnes sont prêtes pour le cycle croissant/décroissant/aucun.
+        """
+        self.tree = tree
+        self.labels = dict(labels)
+        self.criteria: list[tuple[str, int]] = []
+        self.base_order: list[str] = list(tree.get_children(""))
+        self._install_headings()
+
+    def _install_headings(self) -> None:
+        """Associe chaque en-tête connu au gestionnaire de clic.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Chaque titre appelle ``cycle`` avec sa colonne.
+        """
+        for column, label in self.labels.items():
+            self.tree.heading(
+                column,
+                text=label,
+                command=lambda current=column: self.cycle(current),
+            )
+
+    def refresh_base_order(self, reset_sort: bool = False) -> None:
+        """Actualise l'ordre naturel après remplissage du tableau puis réapplique le tri.
+
+        Entrées:
+            reset_sort (bool): Efface les critères actifs lorsque vrai.
+
+        Sortie:
+            None: L'ordre de référence correspond aux lignes actuellement présentes.
+        """
+        self.base_order = list(self.tree.get_children(""))
+        if reset_sort:
+            self.criteria.clear()
+        self.apply()
+
+    def cycle(self, column: str) -> None:
+        """Fait évoluer une colonne entre croissant, décroissant puis aucun tri.
+
+        Entrées:
+            column (str): Identifiant Treeview de la colonne cliquée.
+
+        Sortie:
+            None: Les critères sont mis à jour en conservant l'ordre des autres clics.
+        """
+        position = next(
+            (index for index, (name, _) in enumerate(self.criteria) if name == column),
+            None,
+        )
+        if position is None:
+            self.criteria.append((column, 1))
+        else:
+            direction = self.criteria[position][1]
+            if direction == 1:
+                self.criteria[position] = (column, -1)
+            else:
+                self.criteria.pop(position)
+        self.apply()
+
+    def apply(self) -> None:
+        """Réordonne les lignes selon tous les critères actifs dans l'ordre des clics.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Les lignes et les indicateurs d'en-tête sont actualisés.
+        """
+        children = list(self.tree.get_children(""))
+        if not self.criteria:
+            ordered = [item for item in self.base_order if item in children]
+            ordered.extend(item for item in children if item not in ordered)
+        else:
+            ordered = sorted(children, key=self._comparison_key)
+        for index, item in enumerate(ordered):
+            self.tree.move(item, "", index)
+        self._refresh_headings()
+
+    def _comparison_key(self, item: str):
+        """Construit une clé composite respectant priorité et direction de chaque critère.
+
+        Entrées:
+            item (str): Identifiant d'une ligne du Treeview.
+
+        Sortie:
+            tuple: Clé comparable utilisée par ``sorted``.
+        """
+        result = []
+        for column, direction in self.criteria:
+            raw = self.tree.item(item, "text") if column == "#0" else self.tree.set(item, column)
+            missing, value = self._normalize_value(raw)
+            if isinstance(value, (int, float)):
+                comparable = value if direction == 1 else -value
+                result.append((missing, 0, comparable))
+            else:
+                result.append((missing, 1, _DescendingText(value) if direction == -1 else value))
+        return tuple(result)
+
+    def _normalize_value(self, value: object) -> tuple[int, float | str]:
+        """Convertit une cellule affichée en nombre lorsque c'est possible.
+
+        Entrées:
+            value (object): Valeur issue du Treeview, potentiellement formatée avec ``$`` ou ``%``.
+
+        Sortie:
+            tuple[int, float | str]: Indicateur de valeur absente puis valeur comparable.
+        """
+        text = str(value).strip()
+        if text in {"", "—", "-", "N/A", "n/a"}:
+            return (1, "")
+        cleaned = (
+            text.replace("$", "")
+            .replace("%", "")
+            .replace(" ", "")
+            .replace(" ", "")
+            .replace(",", ".")
+        )
+        try:
+            return (0, float(cleaned))
+        except ValueError:
+            return (0, text.casefold())
+
+    def _refresh_headings(self) -> None:
+        """Affiche priorité et sens de tri directement dans les titres des colonnes.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Les libellés deviennent par exemple ``Loyers ①↓``.
+        """
+        active = {column: (index, direction) for index, (column, direction) in enumerate(self.criteria)}
+        for column, label in self.labels.items():
+            suffix = ""
+            if column in active:
+                index, direction = active[column]
+                rank = self._RANK_SYMBOLS[index] if index < len(self._RANK_SYMBOLS) else f"[{index + 1}]"
+                suffix = f" {rank}{'↑' if direction == 1 else '↓'}"
+            self.tree.heading(
+                column,
+                text=label + suffix,
+                command=lambda current=column: self.cycle(current),
+            )
+
+
+class _DescendingText:
+    """Inverse uniquement la comparaison lexicographique d'une valeur texte.
+
+    Entrées:
+        value (str): Texte normalisé à comparer en ordre décroissant.
+
+    Sortie:
+        _DescendingText: Petit adaptateur comparable utilisable dans une clé ``sorted``.
+    """
+
+    def __init__(self, value: str) -> None:
+        """Conserve le texte normalisé.
+
+        Entrées:
+            value (str): Chaîne déjà préparée pour le tri.
+
+        Sortie:
+            None: La valeur est mémorisée.
+        """
+        self.value = value
+
+    def __lt__(self, other: object) -> bool:
+        """Inverse l'opérateur inférieur afin d'obtenir un ordre alphabétique décroissant.
+
+        Entrées:
+            other (object): Autre adaptateur texte à comparer.
+
+        Sortie:
+            bool: ``True`` lorsque le texte courant doit venir avant en ordre décroissant.
+        """
+        if not isinstance(other, _DescendingText):
+            return NotImplemented
+        return self.value > other.value
+
+    def __eq__(self, other: object) -> bool:
+        """Teste l'égalité des textes normalisés.
+
+        Entrées:
+            other (object): Autre adaptateur texte.
+
+        Sortie:
+            bool: ``True`` lorsque les deux valeurs sont identiques.
+        """
+        return isinstance(other, _DescendingText) and self.value == other.value

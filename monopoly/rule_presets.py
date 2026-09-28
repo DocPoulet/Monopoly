@@ -215,3 +215,45 @@ def import_rule_preset(
 
     save_rule_preset(preset.options, destination, preset.name)
     return load_rule_preset(destination)
+
+
+def rename_rule_preset(preset: RulePreset, new_name: str) -> RulePreset:
+    """Renomme un preset local de règles, son contenu et son fichier.
+
+    Entrées:
+        preset (RulePreset): Preset local à renommer.
+        new_name (str): Nouveau nom lisible.
+
+    Sortie:
+        RulePreset: Preset rechargé depuis le nouveau fichier.
+
+    Lève:
+        ValueError: Si le preset n'a pas de fichier ou si le nom est invalide.
+    """
+    if preset.path is None:
+        raise ValueError("Ce preset n'est pas associé à un fichier local.")
+    cleaned = new_name.strip()
+    if not cleaned:
+        raise ValueError("Le nouveau nom du preset ne peut pas être vide.")
+    destination = preset.path.parent / safe_preset_filename(cleaned)
+    if destination.exists() and destination.resolve() != preset.path.resolve():
+        raise ValueError("Un preset de règles porte déjà ce nom.")
+    save_rule_preset(preset.options, destination, cleaned)
+    if destination.resolve() != preset.path.resolve() and preset.path.exists():
+        preset.path.unlink()
+    return load_rule_preset(destination)
+
+
+def delete_rule_preset(preset: RulePreset) -> None:
+    """Supprime le fichier local d'un preset de règles.
+
+    Entrées:
+        preset (RulePreset): Preset à supprimer.
+
+    Sortie:
+        None: Le fichier disparaît s'il existe.
+    """
+    if preset.path is None:
+        raise ValueError("Ce preset n'est pas associé à un fichier local.")
+    if preset.path.exists():
+        preset.path.unlink()

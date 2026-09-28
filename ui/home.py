@@ -7,6 +7,8 @@ from tkinter import messagebox, ttk
 from typing import Callable
 
 from monopoly.options import GameOptions
+from monopoly.board_config import BoardConfig
+from .theme import VisualPreferences, theme_palette
 
 
 class HomeView(ttk.Frame):
@@ -16,6 +18,8 @@ class HomeView(ttk.Frame):
         master (tk.Misc): Conteneur parent.
         new_game_callback (callable): Fonction appelée après un clic sur Nouvelle partie.
         load_game_callback (callable): Fonction appelée après un clic sur Charger une partie.
+        simulation_callback (callable): Fonction ouvrant le laboratoire de simulations.
+        options_callback (callable): Fonction ouvrant les options globales d'affichage.
         quit_callback (callable): Fonction appelée après un clic sur Quitter.
 
     Sortie:
@@ -27,93 +31,170 @@ class HomeView(ttk.Frame):
         master: tk.Misc,
         new_game_callback: object,
         load_game_callback: object,
+        simulation_callback: object,
+        options_callback: object,
         quit_callback: object,
+        visual_preferences: VisualPreferences | None = None,
     ) -> None:
-        """Construit le titre, les éléments décoratifs et les boutons du menu.
+        """Construit l'accueil V22.2 avec preview isométrique et cartes d'action.
 
         Entrées:
             master (tk.Misc): Conteneur parent.
             new_game_callback (object): Callback du bouton Nouvelle partie.
             load_game_callback (object): Callback du bouton Charger une partie.
+            simulation_callback (object): Callback du laboratoire de simulations.
+            options_callback (object): Callback du menu d'options d'affichage.
             quit_callback (object): Callback du bouton Quitter.
+            visual_preferences (VisualPreferences | None): Style courant à refléter dans la preview.
 
         Sortie:
-            None: L'écran d'accueil est prêt à être affiché.
+            None: L'écran d'accueil responsive est prêt à être affiché.
         """
         super().__init__(master, style="Home.TFrame")
         self.new_game_callback = new_game_callback
         self.load_game_callback = load_game_callback
+        self.simulation_callback = simulation_callback
+        self.options_callback = options_callback
         self.quit_callback = quit_callback
-
+        self.visual_preferences = visual_preferences or VisualPreferences.default()
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
 
-        shell = ttk.Frame(self, style="Home.TFrame", padding=30)
-        shell.grid(row=0, column=0)
+        shell = ttk.Frame(self, style="Home.TFrame", padding=28)
+        shell.grid(row=0, column=0, sticky="nsew")
+        shell.columnconfigure(0, weight=5)
+        shell.columnconfigure(1, weight=4)
+        shell.rowconfigure(0, weight=1)
 
-        logo = tk.Frame(
-            shell,
-            background="#C62828",
-            padx=34,
-            pady=15,
-            highlightbackground="#922020",
-            highlightthickness=2,
-        )
-        logo.pack(pady=(0, 18))
-
-        tk.Label(
-            logo,
-            text="MONOPOLY",
-            background="#C62828",
-            foreground="#FFFFFF",
-            font=("Arial", 34, "bold"),
-        ).pack()
-
+        hero = ttk.Frame(shell, style="V22Card.TFrame", padding=22)
+        hero.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        hero.columnconfigure(0, weight=1)
+        hero.rowconfigure(3, weight=1)
+        ttk.Label(hero, text="MONOPOLY POO", style="V22Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
-            shell,
-            text="Moteur POO",
-            style="HomeSubtitle.TLabel",
-        ).pack()
-
+            hero,
+            text="V22.2.2 • diorama isométrique",
+            style="V22MutedCard.TLabel",
+            font=("Arial", 11, "bold"),
+        ).grid(row=1, column=0, sticky="w", pady=(2, 12))
         ttk.Label(
-            shell,
+            hero,
             text=(
-                "Une version pensée pour jouer et tester les règles,\n"
-                "avec sauvegardes, historique et options de partie."
+                "Plateau isométrique flottant, pions animés, HUD périphérique et panneaux "
+                "intégrés — toujours sur le même moteur POO indépendant."
             ),
-            justify="center",
-            style="HomeText.TLabel",
-        ).pack(pady=(8, 28))
+            style="V22Card.TLabel",
+            wraplength=620,
+            justify="left",
+        ).grid(row=2, column=0, sticky="w")
+        self.home_preview = tk.Canvas(hero, height=430, highlightthickness=0, background="#DCE8E1")
+        self.home_preview.grid(row=3, column=0, sticky="nsew", pady=(16, 0))
+        self.home_preview.bind("<Configure>", self._draw_home_preview)
 
-        menu = ttk.Frame(shell, style="Home.TFrame")
-        menu.pack(fill="x")
-
-        ttk.Button(
+        menu = ttk.Frame(shell, style="V22Card.TFrame", padding=24)
+        menu.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+        menu.columnconfigure(0, weight=1)
+        ttk.Label(menu, text="Que voulez-vous faire ?", style="V22Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(
             menu,
-            text="Nouvelle partie",
-            style="HomePrimary.TButton",
-            command=self._start_new_game,
-        ).pack(fill="x", ipady=7, pady=(0, 10))
+            text="Le style du plateau et des menus se règle dans Options. Les pions se choisissent à la création de partie.",
+            style="V22MutedCard.TLabel",
+            wraplength=430,
+        ).grid(row=1, column=0, sticky="w", pady=(0, 22))
 
-        ttk.Button(
-            menu,
-            text="Charger une partie",
-            style="HomeSecondary.TButton",
-            command=self._load_game,
-        ).pack(fill="x", ipady=4, pady=(0, 10))
-
-        ttk.Button(
-            menu,
-            text="Quitter",
-            style="HomeSecondary.TButton",
-            command=self._quit,
-        ).pack(fill="x", ipady=4)
+        actions = (
+            ("Nouvelle partie", "Créer joueurs, règles, plateau et choisir les pions", self._start_new_game, True),
+            ("Charger une partie", "Reprendre une sauvegarde avec son profil visuel", self._load_game, False),
+            ("Laboratoire", "Simulations, heatmaps, statistiques et rapports", self._open_simulation_lab, False),
+            ("Options", "Style du plateau, thème des menus et préférences visuelles", self._open_options, False),
+            ("Quitter", "Fermer l'application", self._quit, False),
+        )
+        for row, (title, subtitle, command, primary) in enumerate(actions, start=2):
+            card = ttk.Frame(menu, style="V22SurfaceAlt.TFrame", padding=12)
+            card.grid(row=row, column=0, sticky="ew", pady=5)
+            card.columnconfigure(0, weight=1)
+            ttk.Label(card, text=title, font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w")
+            ttk.Label(card, text=subtitle, style="Muted.TLabel", wraplength=330).grid(row=1, column=0, sticky="w")
+            ttk.Button(
+                card,
+                text="Ouvrir",
+                style="Primary.TButton" if primary else "TButton",
+                command=command,
+            ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
 
         ttk.Label(
-            shell,
-            text="Les règles classiques restent les réglages par défaut.",
-            style="HomeHint.TLabel",
-        ).pack(pady=(24, 0))
+            menu,
+            text="V23 introduira l'architecture multi-modes : Classic, Empire, Builder, Gamer, Deal…",
+            style="V22MutedCard.TLabel",
+            wraplength=430,
+        ).grid(row=8, column=0, sticky="sw", pady=(22, 0))
+
+    def _draw_home_preview(self, event: tk.Event | None = None) -> None:
+        """Dessine le diorama isométrique V22.2 sur l'écran d'accueil.
+
+        Entrées:
+            event (tk.Event | None): Redimensionnement éventuel du Canvas.
+
+        Sortie:
+            None: La miniature isométrique s'adapte à la zone disponible.
+        """
+        canvas = self.home_preview
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 420)
+        height = max(canvas.winfo_height(), 300)
+        palette = theme_palette(self.visual_preferences)
+        style = self.visual_preferences.style
+        canvas.configure(background=palette["background"])
+        cx = width * 0.50
+        top_y = height * 0.15
+        half_w = width * 0.39
+        half_h = height * 0.31
+        outer = (
+            cx, top_y,
+            cx + half_w, top_y + half_h,
+            cx, top_y + half_h * 2,
+            cx - half_w, top_y + half_h,
+        )
+        thickness = height * 0.035
+        canvas.create_polygon(
+            cx + half_w, top_y + half_h,
+            cx, top_y + half_h * 2,
+            cx, top_y + half_h * 2 + thickness,
+            cx + half_w, top_y + half_h + thickness,
+            fill=style.board_edge, outline="",
+        )
+        canvas.create_polygon(
+            cx, top_y + half_h * 2,
+            cx - half_w, top_y + half_h,
+            cx - half_w, top_y + half_h + thickness,
+            cx, top_y + half_h * 2 + thickness,
+            fill=style.board_edge, outline="",
+        )
+        canvas.create_polygon(*outer, fill=style.board_surface, outline=style.board_edge, width=4)
+        inset = 0.23
+        inner = (
+            cx, top_y + half_h * inset * 2,
+            cx + half_w * (1 - inset), top_y + half_h,
+            cx, top_y + half_h * (2 - inset * 2),
+            cx - half_w * (1 - inset), top_y + half_h,
+        )
+        canvas.create_polygon(*inner, fill=style.board_center, outline=style.board_edge, width=2)
+        colors = ("#8B5A2B", "#79CFE8", "#D95FA6", "#F39C12", "#E74C3C", "#F4D03F", "#27AE60", "#3156A6")
+        for index, color in enumerate(colors):
+            ratio = 0.12 + index * 0.105
+            x = cx - half_w + half_w * ratio
+            y = top_y + half_h + half_h * ratio
+            canvas.create_polygon(
+                x, y,
+                x + width * 0.045, y + height * 0.017,
+                x + width * 0.032, y + height * 0.045,
+                x - width * 0.013, y + height * 0.028,
+                fill=color, outline="",
+            )
+        canvas.create_text(cx, top_y + half_h * 0.95, text="MONOPOLY", font=("Arial", max(22, int(width * 0.04)), "bold"), fill=style.board_edge)
+        canvas.create_text(cx, top_y + half_h * 1.18, text=f"POO • {style.name.upper()}", font=("Arial", max(9, int(width * 0.014)), "bold"), fill=style.accent)
+        canvas.create_text(cx - half_w * 0.88, top_y + half_h * 1.08, text="●", font=("Arial", 20, "bold"), fill="#D94343")
+        canvas.create_text(cx + half_w * 0.86, top_y + half_h * 0.92, text="◆", font=("Arial", 20, "bold"), fill="#3478D4")
 
     def _start_new_game(self) -> None:
         """Transmet au contrôleur la demande d'ouvrir l'écran des joueurs.
@@ -139,6 +220,30 @@ class HomeView(ttk.Frame):
         if callable(self.load_game_callback):
             self.load_game_callback()
 
+    def _open_simulation_lab(self) -> None:
+        """Transmet la demande d'ouvrir le laboratoire de simulation V21.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback est exécuté s'il est disponible.
+        """
+        if callable(self.simulation_callback):
+            self.simulation_callback()
+
+    def _open_options(self) -> None:
+        """Ouvre les préférences globales de style et d'affichage.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback d'options est déclenché s'il est disponible.
+        """
+        if callable(self.options_callback):
+            self.options_callback()
+
     def _quit(self) -> None:
         """Transmet au contrôleur la demande de fermer l'application.
 
@@ -161,14 +266,20 @@ class PlayerSetupView(ttk.Frame):
         start_callback (callable): Fonction recevant noms et règles validés.
         back_callback (callable): Fonction permettant de revenir à l'accueil.
         rules_callback (callable): Fonction ouvrant l'éditeur de règles.
+        board_callback (callable): Fonction ouvrant l'éditeur de plateau.
+        pack_import_callback (callable): Importe un pack complet règles + plateau.
+        pack_export_callback (callable): Exporte le profil courant en pack complet.
+        visual_callback (callable): Ouvre le sélecteur de pions V22.
         player_names (list[str] | None): Noms déjà saisis à restaurer.
         options (GameOptions | None): Profil de règles déjà configuré.
+        board_config (BoardConfig | None): Plateau déjà sélectionné.
+        visual_preferences (VisualPreferences | None): Apparence V22 déjà choisie.
 
     Sortie:
         PlayerSetupView: Formulaire intégré de création de partie.
     """
 
-    MAX_PLAYERS = 6
+    MAX_PLAYERS = 4
 
     def __init__(
         self,
@@ -176,8 +287,14 @@ class PlayerSetupView(ttk.Frame):
         start_callback: object,
         back_callback: object,
         rules_callback: object | None = None,
+        board_callback: object | None = None,
+        pack_import_callback: object | None = None,
+        pack_export_callback: object | None = None,
+        visual_callback: object | None = None,
         player_names: list[str] | None = None,
         options: GameOptions | None = None,
+        board_config: BoardConfig | None = None,
+        visual_preferences: VisualPreferences | None = None,
     ) -> None:
         """Construit les champs joueurs, le résumé des règles et les boutons.
 
@@ -185,9 +302,15 @@ class PlayerSetupView(ttk.Frame):
             master (tk.Misc): Conteneur parent.
             start_callback (object): Callback appelé avec joueurs et règles.
             back_callback (object): Callback du bouton Retour.
-            rules_callback (object | None): Callback ouvrant la personnalisation.
+            rules_callback (object | None): Callback ouvrant la personnalisation des règles.
+            board_callback (object | None): Callback ouvrant la personnalisation du plateau.
+            pack_import_callback (object | None): Callback important un pack complet.
+            pack_export_callback (object | None): Callback exportant règles et plateau.
+            visual_callback (object | None): Callback ouvrant le sélecteur de pions V22.
             player_names (list[str] | None): Noms à restaurer.
             options (GameOptions | None): Profil de règles courant.
+            board_config (BoardConfig | None): Plateau courant.
+            visual_preferences (VisualPreferences | None): Apparence graphique courante.
 
         Sortie:
             None: Le formulaire est prêt à être utilisé.
@@ -196,7 +319,13 @@ class PlayerSetupView(ttk.Frame):
         self.start_callback = start_callback
         self.back_callback = back_callback
         self.rules_callback = rules_callback
+        self.board_callback = board_callback
+        self.pack_import_callback = pack_import_callback
+        self.pack_export_callback = pack_export_callback
+        self.visual_callback = visual_callback
         self.options = options or GameOptions.classic()
+        self.board_config = (board_config or BoardConfig.standard()).clone()
+        self.visual_preferences = visual_preferences or VisualPreferences.default()
         self.entries: list[ttk.Entry] = []
 
         self.columnconfigure(0, weight=1)
@@ -214,7 +343,7 @@ class PlayerSetupView(ttk.Frame):
 
         ttk.Label(
             card,
-            text="Choisissez entre 2 et 6 joueurs, puis ajustez les règles si nécessaire.",
+            text="Choisissez entre 2 et 4 joueurs, puis ajustez les règles si nécessaire.",
             style="SetupSubtitle.TLabel",
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 16))
 
@@ -245,7 +374,7 @@ class PlayerSetupView(ttk.Frame):
             padding=10,
         )
         rules_frame.grid(
-            row=8,
+            row=6,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -267,9 +396,86 @@ class PlayerSetupView(ttk.Frame):
             command=self._customize_rules,
         ).grid(row=0, column=1, sticky="e")
 
+        board_frame = ttk.LabelFrame(
+            card,
+            text="Plateau et cartes",
+            padding=10,
+        )
+        board_frame.grid(
+            row=7,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(10, 0),
+        )
+        board_frame.columnconfigure(0, weight=1)
+        self.board_summary_label = ttk.Label(
+            board_frame,
+            text=self.board_config.summary(),
+            style="Muted.TLabel",
+            wraplength=560,
+        )
+        self.board_summary_label.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ttk.Button(
+            board_frame,
+            text="Personnaliser le plateau",
+            command=self._customize_board,
+        ).grid(row=0, column=1, sticky="e")
+
+        pack_frame = ttk.LabelFrame(
+            card,
+            text="Pack complet",
+            padding=10,
+        )
+        pack_frame.grid(
+            row=8,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(10, 0),
+        )
+        pack_frame.columnconfigure(0, weight=1)
+        pack_frame.columnconfigure(1, weight=1)
+        ttk.Button(
+            pack_frame,
+            text="Importer règles + plateau",
+            command=self._import_pack,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        ttk.Button(
+            pack_frame,
+            text="Exporter règles + plateau",
+            command=self._export_pack,
+        ).grid(row=0, column=1, sticky="ew", padx=(5, 0))
+
+        visual_frame = ttk.LabelFrame(
+            card,
+            text="Pions",
+            padding=10,
+        )
+        visual_frame.grid(
+            row=9,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(10, 0),
+        )
+        visual_frame.columnconfigure(0, weight=1)
+        self.visual_summary_label = ttk.Label(
+            visual_frame,
+            text="Choisissez un pion différent pour chaque joueur. Le style et le thème se règlent depuis Options.",
+            style="Muted.TLabel",
+            wraplength=560,
+        )
+        self.visual_summary_label.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ttk.Button(
+            visual_frame,
+            text="Choisir les pions",
+            command=self._customize_visual,
+        ).grid(row=0, column=1, sticky="e")
+
         buttons = ttk.Frame(card, style="SetupCard.TFrame")
         buttons.grid(
-            row=9,
+            row=10,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -366,6 +572,63 @@ class PlayerSetupView(ttk.Frame):
         if callable(self.rules_callback):
             self.rules_callback(self.get_player_names(), self.options)
 
+    def _customize_board(self) -> None:
+        """Ouvre l'éditeur de plateau sans perdre joueurs ni règles.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback reçoit les noms, règles et plateau courants.
+        """
+        if callable(self.board_callback):
+            self.board_callback(
+                self.get_player_names(),
+                self.options,
+                self.board_config,
+            )
+
+    def _customize_visual(self) -> None:
+        """Ouvre le sélecteur de pions sans perdre noms, règles ni plateau.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback reçoit toutes les informations nécessaires au retour.
+        """
+        if callable(self.visual_callback):
+            self.visual_callback(
+                self.get_player_names(),
+                self.options,
+                self.board_config,
+                self.visual_preferences,
+            )
+
+    def _import_pack(self) -> None:
+        """Demande l'import d'un pack complet sans perdre les noms des joueurs.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback reçoit les noms actuellement saisis.
+        """
+        if callable(self.pack_import_callback):
+            self.pack_import_callback(self.get_player_names())
+
+    def _export_pack(self) -> None:
+        """Demande l'export du couple règles + plateau actuellement préparé.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le callback reçoit les deux configurations actives.
+        """
+        if callable(self.pack_export_callback):
+            self.pack_export_callback(self.options, self.board_config)
+
     def _on_enter(self, event: tk.Event) -> None:
         """Tente de lancer la partie lorsque l'utilisateur appuie sur Entrée.
 
@@ -393,7 +656,20 @@ class PlayerSetupView(ttk.Frame):
             return
 
         if callable(self.start_callback):
-            self.start_callback(names, self.options)
+            import inspect
+
+            parameters = inspect.signature(self.start_callback).parameters
+            if len(parameters) >= 4:
+                self.start_callback(
+                    names,
+                    self.options,
+                    self.board_config,
+                    self.visual_preferences,
+                )
+            elif len(parameters) >= 3:
+                self.start_callback(names, self.options, self.board_config)
+            else:
+                self.start_callback(names, self.options)
 
     def _back(self) -> None:
         """Retourne au menu d'accueil sans créer de partie.
@@ -605,6 +881,7 @@ class SaveBrowserView(ttk.Frame):
             text=(
                 f"Joueurs : {players}\n"
                 f"Tour : {metadata.get('turn_number', 0)}\n"
+                f"Plateau : {metadata.get('board_name', 'Plateau standard')}\n"
                 f"{state}\n"
                 f"Sauvegardée : {str(metadata.get('saved_at', '')).replace('T', ' ')}"
             )

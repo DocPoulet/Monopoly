@@ -10,11 +10,13 @@ from .auction import Auction
 from .bank import Bank
 from .building_auction import BuildingAuction, BuildingType
 from .board import Board
+from .board_config import BoardConfig
 from .cards import Card, DrawnCardEvent, GetOutOfJailCard, create_chance_deck, create_community_chest_deck
 from .player import Player
 from .properties import OwnableSpace, Property, Utility
 from .rules import Rules
 from .history import GameHistory
+from .replay import ReplayTimeline
 from .options import GameOptions
 from .debt import DebtManagementResult
 from .trade import TradeOffer
@@ -74,8 +76,10 @@ class Game:
     Entrées:
         player_names (list[str]): Noms des joueurs à créer. Deux joueurs minimum.
         seed (int | None): Graine optionnelle pour rendre les lancers reproductibles.
-        board (Board | None): Plateau personnalisé ou ``None`` pour le plateau standard.
+        board (Board | None): Plateau moteur personnalisé hérité ou ``None``.
         options (GameOptions | None): Variantes de partie ; ``None`` utilise les règles classiques.
+        board_config (BoardConfig | None): Définition éditable du plateau et des paquets.
+        capture_replay (bool): Active les snapshots de replay ; les simulations peuvent les couper.
 
     Sortie:
         Game: Partie initialisée avec joueurs, règles, plateau et paquets mélangés.
@@ -87,14 +91,18 @@ class Game:
         seed: int | None = None,
         board: Board | None = None,
         options: GameOptions | None = None,
+        board_config: BoardConfig | None = None,
+        capture_replay: bool = True,
     ) -> None:
         """Initialise une nouvelle partie et ses composants principaux.
 
         Entrées:
             player_names (list[str]): Noms des joueurs dans l'ordre de jeu initial.
             seed (int | None): Graine du générateur aléatoire, utile pour les tests.
-            board (Board | None): Plateau à utiliser ou ``None`` pour le standard.
+            board (Board | None): Plateau moteur à utiliser pour compatibilité.
             options (GameOptions | None): Options configurables de la partie.
+            board_config (BoardConfig | None): Plateau éditable avec ses paquets de cartes.
+            capture_replay (bool): Enregistre les snapshots de replay si ``True``.
 
         Sortie:
             None: Le constructeur prépare tous les composants de la partie.
@@ -106,7 +114,17 @@ class Game:
             raise ValueError("Il faut au moins 2 joueurs.")
 
         self.random = random.Random(seed)
-        self.board = board or Board.standard()
+        if board is not None and board_config is not None:
+            raise ValueError("Fournissez soit board, soit board_config, pas les deux.")
+        if board_config is not None:
+            self.board_config = board_config.clone()
+            self.board = self.board_config.build_board()
+        elif board is not None:
+            self.board_config = BoardConfig.from_board(board)
+            self.board = board
+        else:
+            self.board_config = BoardConfig.standard()
+            self.board = self.board_config.build_board()
         self.options = options or GameOptions()
         self.options.validate()
         self._apply_property_price_percent()
@@ -127,8 +145,8 @@ class Game:
         self.pending_rent_claim: PendingRentClaim | None = None
         self._landing_build_context: tuple[int, int] | None = None
         self.rules = Rules(self)
-        self.chance_deck = create_chance_deck(self.random)
-        self.community_chest_deck = create_community_chest_deck(self.random)
+        self.chance_deck = self.board_config.build_chance_deck(self.random)
+        self.community_chest_deck = self.board_config.build_community_chest_deck(self.random)
         self.current_player_index = 0
         self.turn_number = 1
         self.completed_rounds = 0
@@ -139,6 +157,9 @@ class Game:
         self.financial_events_this_turn: list[str] = []
         self.pending_bank_auctions: list[OwnableSpace] = []
         self.history = GameHistory()
+        self.replay = ReplayTimeline()
+        self.capture_replay = bool(capture_replay)
+        self.capture_landing_events = False
         self.mortgage_selector: Callable[
             [Player, list[OwnableSpace], int], list[OwnableSpace]
         ] | None = None
@@ -148,6 +169,8 @@ class Game:
         self.received_mortgage_selector: Callable[
             [Player, list[OwnableSpace]], list[OwnableSpace]
         ] | None = None
+        if self.capture_replay:
+            self.replay.capture(self, 0, "Début de partie")
 
 
     def _apply_property_price_percent(self) -> None:
@@ -258,6 +281,10 @@ class Game:
             return False
         self.pending_rent_claim = None
         self.rules.transfer_money(claim.payer, claim.recipient, claim.amount)
+        space = self.board[claim.property_index]
+        development_level = (
+            space.development_level if isinstance(space, Property) else None
+        )
         self.record_event(
             "rent",
             f"{claim.payer.name} paie {claim.amount} $ de loyer à {claim.recipient.name}.",
@@ -265,6 +292,7 @@ class Game:
             amount=claim.amount,
             recipient_id=claim.recipient.player_id,
             property_index=claim.property_index,
+            development_level=development_level,
             manual=True,
         )
         return True
@@ -1003,6 +1031,14 @@ class Game:
             str: Description de l'effet appliqué au joueur.
         """
         space = self.board.get_player_space(player)
+        if self.capture_landing_events:
+            self.record_event(
+                "landing",
+                f"{player.name} s'arrête sur {space.name}.",
+                player,
+                space_index=space.index,
+                space_name=space.name,
+            )
         return self._resolve_space(
             player,
             space,
@@ -1032,6 +1068,12 @@ class Game:
         self.clear_landing_build_context()
 
         if self._new_round_pending:
+            if self.capture_replay:
+                self.replay.capture(
+                    self,
+                    self.turn_number,
+                    f"Fin du tour {self.turn_number}",
+                )
             self.turn_number += 1
             self._new_round_pending = False
 
@@ -1272,6 +1314,9 @@ class Game:
                 amount=rent,
                 recipient_id=owner.player_id,
                 property_index=space.index,
+                development_level=(
+                    space.development_level if isinstance(space, Property) else None
+                ),
             )
             return f"{player.name} paie {rent} de loyer à {owner.name}."
 

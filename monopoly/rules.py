@@ -223,6 +223,11 @@ class Rules:
         player.move_to(self.JAIL_POSITION)
         player.in_jail = True
         player.jail_turns = 0
+        self.game.record_event(
+            "jail_enter",
+            f"{player.name} va en prison.",
+            player,
+        )
 
     def release_from_jail(self, player: Player) -> None:
         """Libère un joueur de prison et remet son compteur de tentatives à zéro.
@@ -841,6 +846,7 @@ class Rules:
             building_type="house",
             property_index=property_.index,
             price=price,
+            development_level=property_.development_level,
         )
         return True
 
@@ -1027,6 +1033,7 @@ class Rules:
             building_type="hotel",
             property_index=property_.index,
             price=price,
+            development_level=property_.development_level,
         )
         return True
 

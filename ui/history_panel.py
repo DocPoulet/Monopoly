@@ -1,4 +1,4 @@
-"""Panneau intégré d'historique filtrable et de statistiques de partie."""
+"""Panneau intégré combinant replay, statistiques avancées et journal filtrable."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Callable, TYPE_CHECKING
 
 from monopoly.history import GameEvent
 from monopoly.statistics import GameStatistics
+from .replay_panel import AdvancedStatisticsTab, ReplayTab
 
 if TYPE_CHECKING:
     from monopoly.game import Game
@@ -25,15 +26,22 @@ EVENT_LABELS = {
     "mortgage": "Hypothèques",
     "unmortgage": "Déshypothèques",
     "rent": "Loyers",
+    "rent_pending": "Loyers à réclamer",
+    "rent_waived": "Loyers abandonnés",
     "trade": "Échanges",
+    "debt_property_transfer": "Biens cédés pour dette",
     "bankruptcy": "Faillites",
+    "jail_enter": "Prison",
     "financial": "Financier",
-    "free_parking_bonus": "Parc Gratuit",
+    "free_parking_bonus": "Bonus Parc Gratuit",
+    "free_parking_pot_add": "Cagnotte +",
+    "free_parking_pot_collect": "Cagnotte gagnée",
+    "game_over": "Fin de partie",
 }
 
 
 class HistoryOverlay(tk.Frame):
-    """Affiche statistiques et journal filtrable sans ouvrir de nouvelle fenêtre.
+    """Affiche replay, statistiques et journal sans modifier la partie courante.
 
     Entrées:
         master (tk.Misc): Conteneur parent, généralement ``BoardView``.
@@ -43,32 +51,32 @@ class HistoryOverlay(tk.Frame):
     """
 
     def __init__(self, master: tk.Misc) -> None:
-        """Construit les compteurs, filtres, navigation et liste d'événements.
+        """Construit les trois onglets et la navigation du journal détaillé.
 
         Entrées:
             master (tk.Misc): Conteneur graphique parent.
 
         Sortie:
-            None: Le panneau est créé et masqué.
+            None: Le panneau est créé puis masqué.
         """
         super().__init__(
             master,
             background="#E8EEF1",
             highlightbackground="#7E8C95",
             highlightthickness=2,
-            padx=12,
-            pady=12,
+            padx=10,
+            pady=10,
         )
         self.game: Game | None = None
         self.on_close: Callable[[], None] | None = None
         self.filtered_events: list[GameEvent] = []
 
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(4, weight=1)
+        self.rowconfigure(2, weight=1)
 
         ttk.Label(
             self,
-            text="Historique & statistiques",
+            text="Replay & analyse de partie",
             font=("Arial", 17, "bold"),
         ).grid(row=0, column=0, sticky="w")
 
@@ -76,43 +84,55 @@ class HistoryOverlay(tk.Frame):
             self,
             text="",
             style="Muted.TLabel",
-            wraplength=760,
+            wraplength=880,
         )
-        self.summary_label.grid(row=1, column=0, sticky="ew", pady=(3, 8))
+        self.summary_label.grid(row=1, column=0, sticky="ew", pady=(3, 7))
 
-        player_frame = ttk.LabelFrame(self, text="Joueurs", padding=6)
-        player_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        self.notebook = ttk.Notebook(self)
+        self.notebook.grid(row=2, column=0, sticky="nsew")
 
-        columns = (
-            "turns",
-            "cards",
-            "bought",
-            "rent_paid",
-            "rent_received",
-            "buildings",
-        )
-        self.player_tree = ttk.Treeview(
-            player_frame,
-            columns=columns,
-            show="tree headings",
-            height=4,
-        )
-        self.player_tree.heading("#0", text="Joueur")
-        self.player_tree.heading("turns", text="Tours")
-        self.player_tree.heading("cards", text="Cartes")
-        self.player_tree.heading("bought", text="Achats")
-        self.player_tree.heading("rent_paid", text="Loyers payés")
-        self.player_tree.heading("rent_received", text="Loyers reçus")
-        self.player_tree.heading("buildings", text="Bâtiments")
-        self.player_tree.column("#0", width=120)
-        for column in columns:
-            self.player_tree.column(column, width=90, anchor="center")
-        self.player_tree.pack(fill="x")
+        self.replay_tab = ReplayTab(self.notebook)
+        self.statistics_tab = AdvancedStatisticsTab(self.notebook)
+        self.journal_tab = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(self.replay_tab, text="Replay")
+        self.notebook.add(self.statistics_tab, text="Statistiques avancées")
+        self.notebook.add(self.journal_tab, text="Journal")
 
-        controls = ttk.Frame(self)
-        controls.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        self._build_journal_tab()
+
+        footer = ttk.Frame(self)
+        footer.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            footer,
+            text=(
+                "Le replay utilise des snapshots en lecture seule : consulter un ancien tour "
+                "ne modifie jamais la partie réelle."
+            ),
+            style="Muted.TLabel",
+        ).pack(side="left")
+        ttk.Button(
+            footer,
+            text="Fermer",
+            command=self._close,
+        ).pack(side="right")
+
+        self.place_forget()
+
+    def _build_journal_tab(self) -> None:
+        """Construit le journal filtrable compatible avec les versions précédentes.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Filtres, tableau, détail et navigation sont ajoutés à l'onglet.
+        """
+        self.journal_tab.columnconfigure(0, weight=1)
+        self.journal_tab.rowconfigure(2, weight=1)
+
+        controls = ttk.Frame(self.journal_tab)
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 7))
         controls.columnconfigure(1, weight=1)
-
         ttk.Label(controls, text="Filtre :").grid(row=0, column=0, sticky="w")
         self.filter_var = tk.StringVar(value="Tous")
         self.filter_combo = ttk.Combobox(
@@ -120,7 +140,7 @@ class HistoryOverlay(tk.Frame):
             textvariable=self.filter_var,
             state="readonly",
             values=list(EVENT_LABELS.values()),
-            width=22,
+            width=24,
         )
         self.filter_combo.grid(row=0, column=1, sticky="w", padx=(6, 12))
         self.filter_combo.bind("<<ComboboxSelected>>", self._filter_changed)
@@ -139,11 +159,43 @@ class HistoryOverlay(tk.Frame):
         )
         self.next_button.grid(row=0, column=3, padx=3)
 
-        event_frame = ttk.LabelFrame(self, text="Journal détaillé", padding=6)
-        event_frame.grid(row=4, column=0, sticky="nsew")
+        stats = ttk.LabelFrame(self.journal_tab, text="Résumé joueurs", padding=5)
+        stats.grid(row=1, column=0, sticky="ew", pady=(0, 7))
+        columns = (
+            "turns",
+            "cards",
+            "bought",
+            "rent_paid",
+            "rent_received",
+            "buildings",
+            "jail",
+        )
+        self.player_tree = ttk.Treeview(
+            stats,
+            columns=columns,
+            show="tree headings",
+            height=4,
+        )
+        headings = {
+            "turns": "Tours",
+            "cards": "Cartes",
+            "bought": "Achats",
+            "rent_paid": "Loyers payés",
+            "rent_received": "Loyers reçus",
+            "buildings": "Bâtiments",
+            "jail": "Prison",
+        }
+        self.player_tree.heading("#0", text="Joueur")
+        self.player_tree.column("#0", width=110)
+        for column in columns:
+            self.player_tree.heading(column, text=headings[column])
+            self.player_tree.column(column, width=88, anchor="center")
+        self.player_tree.pack(fill="x")
+
+        event_frame = ttk.LabelFrame(self.journal_tab, text="Journal détaillé", padding=5)
+        event_frame.grid(row=2, column=0, sticky="nsew")
         event_frame.columnconfigure(0, weight=1)
         event_frame.rowconfigure(0, weight=1)
-
         event_columns = ("turn", "type", "message")
         self.event_tree = ttk.Treeview(
             event_frame,
@@ -155,40 +207,25 @@ class HistoryOverlay(tk.Frame):
         self.event_tree.heading("type", text="Type")
         self.event_tree.heading("message", text="Événement")
         self.event_tree.column("turn", width=55, anchor="center")
-        self.event_tree.column("type", width=130, anchor="center")
-        self.event_tree.column("message", width=520)
-
-        scrollbar = ttk.Scrollbar(
-            event_frame,
-            orient="vertical",
-            command=self.event_tree.yview,
-        )
-        self.event_tree.configure(yscrollcommand=scrollbar.set)
+        self.event_tree.column("type", width=145, anchor="center")
+        self.event_tree.column("message", width=590)
+        scroll = ttk.Scrollbar(event_frame, orient="vertical", command=self.event_tree.yview)
+        self.event_tree.configure(yscrollcommand=scroll.set)
         self.event_tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        scroll.grid(row=0, column=1, sticky="ns")
         self.event_tree.bind("<<TreeviewSelect>>", self._event_selected)
 
         self.detail_label = ttk.Label(
-            self,
+            self.journal_tab,
             text="",
             style="Muted.TLabel",
-            wraplength=760,
+            wraplength=850,
             justify="left",
         )
-        self.detail_label.grid(row=5, column=0, sticky="ew", pady=(8, 0))
-
-        footer = ttk.Frame(self)
-        footer.grid(row=6, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(
-            footer,
-            text="Fermer",
-            command=self._close,
-        ).pack(side="right")
-
-        self.place_forget()
+        self.detail_label.grid(row=3, column=0, sticky="ew", pady=(7, 0))
 
     def show(self, game: "Game", on_close: Callable[[], None]) -> None:
-        """Affiche l'historique courant et recalcule toutes les statistiques.
+        """Affiche la timeline courante et recalcule toutes les analyses.
 
         Entrées:
             game (Game): Partie à analyser.
@@ -204,8 +241,8 @@ class HistoryOverlay(tk.Frame):
             relx=0.5,
             rely=0.5,
             anchor="center",
-            relwidth=0.92,
-            relheight=0.86,
+            relwidth=0.96,
+            relheight=0.92,
         )
         self.lift()
         self.refresh_data()
@@ -240,23 +277,29 @@ class HistoryOverlay(tk.Frame):
         return "all"
 
     def refresh_data(self) -> None:
-        """Reconstruit statistiques, joueurs et événements selon le filtre.
+        """Reconstruit replay, statistiques et journal à partir de la partie courante.
 
         Entrées:
             Aucune autre que la partie courante.
 
         Sortie:
-            None: Les tableaux affichent les données les plus récentes.
+            None: Les trois onglets affichent les données les plus récentes.
         """
         if self.game is None:
             return
 
         stats = GameStatistics.from_game(self.game)
-        self.summary_label.configure(text=" • ".join(stats.summary_lines()))
+        self.summary_label.configure(
+            text=(
+                " • ".join(stats.summary_lines())
+                + f" • snapshots : {len(self.game.replay.display_snapshots(self.game))}"
+            )
+        )
+        self.replay_tab.set_game(self.game)
+        self.statistics_tab.set_game(self.game)
 
         for item in self.player_tree.get_children():
             self.player_tree.delete(item)
-
         for player in stats.players:
             self.player_tree.insert(
                 "",
@@ -269,18 +312,18 @@ class HistoryOverlay(tk.Frame):
                     f"{player.rent_paid} $",
                     f"{player.rent_received} $",
                     player.buildings_built,
+                    player.jail_visits,
                 ),
             )
 
         key = self._selected_filter_key()
-        events = self.game.history.recent(500)
+        events = self.game.history.recent(1000)
         if key != "all":
             events = [event for event in events if event.event_type == key]
         self.filtered_events = events
 
         for item in self.event_tree.get_children():
             self.event_tree.delete(item)
-
         for index, event in enumerate(events):
             self.event_tree.insert(
                 "",
@@ -302,22 +345,21 @@ class HistoryOverlay(tk.Frame):
             self._event_selected(None)
         else:
             self.detail_label.configure(text="Aucun événement pour ce filtre.")
-
         self._refresh_navigation()
 
     def _filter_changed(self, event: tk.Event | None) -> None:
         """Réapplique le filtre après sélection d'une catégorie.
 
         Entrées:
-            event (tk.Event | None): Événement de combobox, facultatif en test.
+            event (tk.Event | None): Événement de combobox facultatif.
 
         Sortie:
-            None: La liste est reconstruite.
+            None: La liste du journal est reconstruite.
         """
         self.refresh_data()
 
     def _selected_event_index(self) -> int | None:
-        """Retourne l'index de l'événement sélectionné.
+        """Retourne l'index de l'événement sélectionné dans le journal global.
 
         Entrées:
             Aucune.
@@ -340,17 +382,13 @@ class HistoryOverlay(tk.Frame):
             event (tk.Event | None): Événement de sélection.
 
         Sortie:
-            None: Tour, catégorie, joueur et données sont résumés sous la liste.
+            None: Tour, catégorie et données sont résumés sous la liste.
         """
         index = self._selected_event_index()
         if index is None or not 0 <= index < len(self.filtered_events):
             return
-
         item = self.filtered_events[index]
-        data_text = ", ".join(
-            f"{key}={value}"
-            for key, value in item.data.items()
-        )
+        data_text = ", ".join(f"{key}={value}" for key, value in item.data.items())
         suffix = f" • {data_text}" if data_text else ""
         self.detail_label.configure(
             text=(
@@ -362,7 +400,7 @@ class HistoryOverlay(tk.Frame):
         self._refresh_navigation()
 
     def _move_selection(self, delta: int) -> None:
-        """Déplace la sélection d'un événement vers l'avant ou l'arrière.
+        """Déplace la sélection du journal vers l'avant ou l'arrière.
 
         Entrées:
             delta (int): Décalage, généralement -1 ou +1.
@@ -383,7 +421,7 @@ class HistoryOverlay(tk.Frame):
         self._event_selected(None)
 
     def _previous_event(self) -> None:
-        """Sélectionne l'événement précédent.
+        """Sélectionne l'événement précédent du journal global.
 
         Entrées:
             Aucune.
@@ -394,7 +432,7 @@ class HistoryOverlay(tk.Frame):
         self._move_selection(-1)
 
     def _next_event(self) -> None:
-        """Sélectionne l'événement suivant.
+        """Sélectionne l'événement suivant du journal global.
 
         Entrées:
             Aucune.
@@ -405,7 +443,7 @@ class HistoryOverlay(tk.Frame):
         self._move_selection(1)
 
     def _refresh_navigation(self) -> None:
-        """Active les boutons précédent/suivant selon la position courante.
+        """Active les boutons précédent/suivant selon la sélection du journal.
 
         Entrées:
             Aucune.

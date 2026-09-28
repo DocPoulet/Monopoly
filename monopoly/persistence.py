@@ -23,7 +23,9 @@ from .cards import (
 )
 from .game import Game
 from .history import GameHistory
+from .replay import ReplayTimeline
 from .options import GameOptions
+from .board_config import BoardConfig
 from .properties import OwnableSpace, Property
 
 
@@ -167,9 +169,11 @@ def game_to_dict(game: Game) -> dict[str, Any]:
             "turn_number": game.upcoming_turn_number,
             "active_players": len(game.active_players),
             "winner": None if game.winner is None else game.winner.name,
+            "board_name": game.board_config.name,
         },
         "game": {
             "options": game.options.to_dict(),
+            "board_config": game.board_config.to_dict(),
             "players": players,
             "spaces": spaces,
             "bank": {
@@ -206,6 +210,7 @@ def game_to_dict(game: Game) -> dict[str, Any]:
             ],
             "random_state": game.random.getstate(),
             "history": game.history.to_dict(),
+            "replay": game.replay.to_dict(),
         },
     }
 
@@ -238,10 +243,21 @@ def game_from_dict(data: dict[str, Any]) -> Game:
         raise SaveGameError("La sauvegarde doit contenir au moins deux joueurs.")
 
     names = [str(item["name"]) for item in player_data]
+    board_data = state.get("board_config")
+    try:
+        board_config = (
+            BoardConfig.from_dict(dict(board_data))
+            if isinstance(board_data, dict)
+            else BoardConfig.standard()
+        )
+    except (TypeError, ValueError, KeyError) as error:
+        raise SaveGameError("Définition de plateau invalide dans la sauvegarde.") from error
+
     game = Game(
         names,
         seed=0,
         options=GameOptions.from_dict(state.get("options")),
+        board_config=board_config,
     )
 
     if len(game.players) != len(player_data):
@@ -370,6 +386,12 @@ def game_from_dict(data: dict[str, Any]) -> Game:
         raise SaveGameError("État aléatoire invalide.") from error
 
     game.history = GameHistory.from_dict(dict(state.get("history", {})))
+    replay_data = state.get("replay")
+    if isinstance(replay_data, dict):
+        game.replay = ReplayTimeline.from_dict(dict(replay_data))
+    else:
+        game.replay = ReplayTimeline()
+        game.replay.capture(game, 0, "État chargé sans historique de replay")
 
     if state.get("turn_semantics") != "round":
         turn_events = [
@@ -467,6 +489,12 @@ def read_save_metadata(path: str | Path) -> dict[str, Any]:
         "turn_number": int(metadata.get("turn_number", state.get("turn_number", 0))),
         "active_players": int(metadata.get("active_players", 0)),
         "winner": metadata.get("winner"),
+        "board_name": str(
+            metadata.get(
+                "board_name",
+                dict(state.get("board_config", {})).get("name", "Plateau standard"),
+            )
+        ),
     }
 
 

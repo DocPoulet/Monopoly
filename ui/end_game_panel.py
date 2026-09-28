@@ -116,7 +116,7 @@ class EndGameOverlay(tk.Frame):
 
         ttk.Button(
             buttons,
-            text="Voir l'historique",
+            text="Voir replay & statistiques",
             command=self._history,
         ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
@@ -134,6 +134,7 @@ class EndGameOverlay(tk.Frame):
         game: "Game",
         on_history: Callable[[], None],
         on_new_game: Callable[[], None],
+        abandoned: bool = False,
     ) -> None:
         """Affiche le bilan final calculé depuis le moteur et l'historique.
 
@@ -141,6 +142,7 @@ class EndGameOverlay(tk.Frame):
             game (Game): Partie terminée.
             on_history (Callable[[], None]): Ouvre l'historique complet.
             on_new_game (Callable[[], None]): Revient au menu principal.
+            abandoned (bool): Indique un retour volontaire au menu avant la fin naturelle.
 
         Sortie:
             None: Le panneau devient visible au centre du plateau.
@@ -150,22 +152,25 @@ class EndGameOverlay(tk.Frame):
         self.on_new_game = on_new_game
 
         winner = game.winner
-        if winner is not None:
+        if abandoned:
+            self.title_label.configure(text="Bilan de la partie")
+            self.reason_label.configure(
+                text="Partie interrompue volontairement avant son terme."
+            )
+        elif winner is not None:
             self.title_label.configure(text=f"Victoire de {winner.name}")
+            if game.reached_turn_limit:
+                self.reason_label.configure(
+                    text=(
+                        f"Limite de {game.options.turn_limit} tours atteinte — "
+                        "classement selon la valeur nette."
+                    )
+                )
+            else:
+                self.reason_label.configure(text="Dernier joueur encore solvable.")
         else:
             self.title_label.configure(text="Partie terminée")
-
-        if game.reached_turn_limit:
-            self.reason_label.configure(
-                text=(
-                    f"Limite de {game.options.turn_limit} tours atteinte — "
-                    "classement selon la valeur nette."
-                )
-            )
-        else:
-            self.reason_label.configure(
-                text="Dernier joueur encore solvable."
-            )
+            self.reason_label.configure(text="Bilan final de la partie.")
 
         stats = GameStatistics.from_game(game)
         largest_rent = max(
@@ -201,7 +206,7 @@ class EndGameOverlay(tk.Frame):
             self.tree.insert(
                 "",
                 "end",
-                text=player.name + (" 🏆" if player is winner else ""),
+                text=player.name + (" 🏆" if player is winner and not abandoned else ""),
                 values=(
                     f"{player.cash} $",
                     f"{game.player_net_worth(player)} $",

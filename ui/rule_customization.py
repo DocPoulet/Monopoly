@@ -18,6 +18,7 @@ from monopoly.rule_presets import (
     save_rule_preset,
     safe_preset_filename,
 )
+from .preset_library import RulePresetLibraryDialog
 
 
 class RuleCustomizationView(ttk.Frame):
@@ -160,18 +161,22 @@ class RuleCustomizationView(ttk.Frame):
         ).grid(row=0, column=3, sticky="ew", padx=(3, 0))
         ttk.Button(
             presets,
+            text="Bibliothèque…",
+            command=self._open_preset_library,
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 3), pady=(6, 0))
+        ttk.Button(
+            presets,
             text="Exporter le profil courant",
             command=self._export_current_preset,
         ).grid(row=1, column=2, columnspan=2, sticky="ew", padx=(3, 0), pady=(6, 0))
         ttk.Label(
             presets,
             text=(
-                "Les presets locaux restent disponibles entre les parties. "
-                "Importer ajoute un preset externe à la bibliothèque locale."
+                "La bibliothèque permet aussi d'apercevoir, renommer et supprimer les presets locaux."
             ),
             style="Muted.TLabel",
-            wraplength=620,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            wraplength=760,
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         general = self._section(card, 3, "Règles générales")
         self._numeric(general, 0, 0, "Argent de départ", self.starting_cash_var, "1500 $")
@@ -395,6 +400,22 @@ class RuleCustomizationView(ttk.Frame):
         self.property_debt_payment_var.set(options.property_debt_payment)
         self.max_buildings_per_action_var.set(str(options.max_buildings_per_action))
 
+
+    def _open_preset_library(self) -> None:
+        """Ouvre la bibliothèque avancée de règles et charge le profil choisi.
+
+        Entrées:
+            Aucune.
+
+        Sortie:
+            None: Le profil sélectionné remplit tous les champs de l'éditeur.
+        """
+        dialog = RulePresetLibraryDialog(self, self.preset_directory)
+        self.wait_window(dialog)
+        self._refresh_preset_list()
+        if dialog.selected is not None:
+            self.preset_var.set(dialog.selected.name)
+            self._apply_options_to_fields(dialog.selected.options)
 
     def _load_selected_preset(self) -> None:
         """Charge le preset local sélectionné dans les champs sans lancer la partie.

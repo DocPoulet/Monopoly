@@ -43,6 +43,11 @@ class Board:
         if len(spaces) != self.SIZE:
             raise ValueError(f"Le plateau doit contenir {self.SIZE} cases.")
         self.spaces = spaces
+        self._property_groups: dict[str, tuple[Property, ...]] = {}
+        for space in spaces:
+            if isinstance(space, Property):
+                current = self._property_groups.get(space.color_group, ())
+                self._property_groups[space.color_group] = (*current, space)
 
     def __len__(self) -> int:
         """Retourne le nombre de cases présentes sur le plateau.
@@ -97,11 +102,7 @@ class Board:
         Sortie:
             list[Property]: Terrains du groupe demandé, dans l'ordre du plateau.
         """
-        return [
-            space
-            for space in self.spaces
-            if isinstance(space, Property) and space.color_group == color_group
-        ]
+        return list(self._property_groups.get(color_group, ()))
 
     def player_owns_group(self, player: Player, color_group: str) -> bool:
         """Vérifie si un joueur possède tous les terrains d'un groupe de couleur.

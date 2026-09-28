@@ -486,16 +486,14 @@ class PropertyManagerOverlay(tk.Frame):
             ])
         elif isinstance(space, Railroad):
             rows.extend([
-                ("1 gare", f"{self.game.rules.scale_rent(25)} $", False),
-                ("2 gares", f"{self.game.rules.scale_rent(50)} $", False),
-                ("3 gares", f"{self.game.rules.scale_rent(100)} $", False),
-                ("4 gares", f"{self.game.rules.scale_rent(200)} $", True),
+                (f"{index} gare" if index == 1 else f"{index} gares", f"{self.game.rules.scale_rent(value)} $", index == 4)
+                for index, value in enumerate(space.rent_values, start=1)
             ])
         elif isinstance(space, Utility):
             suffix = "" if self.game.options.rent_percent == 100 else f" × {self.game.options.rent_percent} %"
             rows.extend([
-                ("1 compagnie", f"4 × le total des dés{suffix}", False),
-                ("2 compagnies", f"10 × le total des dés{suffix}", True),
+                ("1 compagnie", f"{space.multipliers[0]} × le total des dés{suffix}", False),
+                ("2 compagnies", f"{space.multipliers[1]} × le total des dés{suffix}", True),
             ])
 
         for label, value, bold in rows:

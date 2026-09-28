@@ -237,10 +237,13 @@ class Railroad(OwnableSpace):
 
     Entrées:
         index, name, price, owner, mortgaged: Paramètres hérités de ``OwnableSpace``.
+        rent_values (tuple[int, int, int, int]): Loyers pour une à quatre gares possédées.
 
     Sortie:
         Railroad: Gare appliquant automatiquement son barème de loyer.
     """
+
+    rent_values: tuple[int, int, int, int] = (25, 50, 100, 200)
 
     def calculate_rent(self, game: Game, dice_total: int) -> int:
         """Calcule le loyer de la gare selon le nombre de gares du propriétaire.
@@ -261,7 +264,7 @@ class Railroad(OwnableSpace):
             if isinstance(space, Railroad)
         )
 
-        return 25 * (2 ** max(0, count - 1))
+        return self.rent_values[min(max(count, 1), 4) - 1]
 
 
 @dataclass
@@ -270,10 +273,13 @@ class Utility(OwnableSpace):
 
     Entrées:
         index, name, price, owner, mortgaged: Paramètres hérités de ``OwnableSpace``.
+        multipliers (tuple[int, int]): Multiplicateurs avec une ou au moins deux compagnies.
 
     Sortie:
         Utility: Compagnie calculant son loyer à partir des dés.
     """
+
+    multipliers: tuple[int, int] = (4, 10)
 
     def calculate_rent(self, game: Game, dice_total: int) -> int:
         """Calcule le loyer d'une compagnie à partir de la somme des dés.
@@ -294,5 +300,5 @@ class Utility(OwnableSpace):
             if isinstance(space, Utility)
         )
 
-        multiplier = 10 if count >= 2 else 4
+        multiplier = self.multipliers[1] if count >= 2 else self.multipliers[0]
         return dice_total * multiplier

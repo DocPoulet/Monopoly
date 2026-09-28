@@ -8,9 +8,7 @@ Projet Python de Monopoly orienté objet avec interface Tkinter. La V22 est une 
 
 ### Ajustement fin des rotations — V22.2.4
 
-- les noms des terrains sont désormais alignés exactement sur l'axe de leur bande de couleur, soit environ 37° de correction supplémentaire par rapport à V22.2.3 ;
-- les coins 0, 10, 20 et 30 restent horizontaux ;
-- les prix utilisent le sens de rotation du côté précédent du plateau : `1–9 ← 31–39`, `11–19 ← 1–9`, `21–29 ← 11–19`, `31–39 ← 21–29`.
+- fix des rotations des noms de cases
 
 ## Uniformisation des cases, options globales et retour au menu — V22.2.4
 
